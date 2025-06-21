@@ -70,17 +70,173 @@ jobs:
           fi
         done
         
-    - name: Test dry run mode
+    - name: Test help functionality (should work on any OS)
       run: |
-        echo "Testing dry run mode..."
+        echo "Testing help functionality on Linux (should work)..."
         if [ -f "setup-gpg-git.sh" ]; then
-          echo "Running setup-gpg-git.sh --dry-run --help"
-          bash setup-gpg-git.sh --help
-          
-          # Note: Can't test --dry-run without keybase, but we can test argument parsing
-          echo "Testing argument parsing..."
-          bash -c 'source setup-gpg-git.sh; parse_args --dry-run' || echo "Dry run test completed"
+          echo "Testing --help flag"
+          ./setup-gpg-git.sh --help
+          echo "✅ Help works on non-macOS systems"
         fi
+        
+    - name: Test environment validation (should fail on Linux)
+      run: |
+        echo "Testing environment validation on Linux (should fail gracefully)..."
+        if [ -f "setup-gpg-git.sh" ]; then
+          echo "Testing that script rejects non-macOS systems"
+          
+          # This should fail with exit code 1 due to environment validation
+          if ./setup-gpg-git.sh --dry-run 2>&1; then
+            echo "❌ ERROR: Script should have failed on Linux!"
+            exit 1
+          else
+            echo "✅ Script correctly rejected non-macOS environment"
+          fi
+          
+          # Test that error message is helpful
+          echo "Checking error message quality..."
+          error_output=$(./setup-gpg-git.sh --auto 2>&1 || true)
+          
+          if echo "$error_output" | grep -q "Unsupported operating system"; then
+            echo "✅ Found expected error message about unsupported OS"
+          else
+            echo "❌ Error message doesn't mention unsupported OS"
+            echo "Actual output: $error_output"
+            exit 1
+          fi
+          
+          if echo "$error_output" | grep -q "macOS (Darwin)"; then
+            echo "✅ Error message mentions macOS requirement"
+          else
+            echo "❌ Error message doesn't mention macOS requirement"
+            exit 1
+          fi
+          
+          if echo "$error_output" | grep -q "Linux.*package manager"; then
+            echo "✅ Error message provides Linux alternative"
+          else
+            echo "❌ Error message doesn't provide Linux alternative"
+            exit 1
+          fi
+        fi
+
+  environment-validation:
+    name: Environment Validation Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Make script executable
+      run: chmod +x setup-gpg-git.sh
+      
+    - name: Test OS detection
+      run: |
+        echo "Testing OS detection on Linux..."
+        
+        # Test that uname -s returns Linux
+        actual_os=$(uname -s)
+        echo "Detected OS: $actual_os"
+        
+        if [ "$actual_os" != "Linux" ]; then
+          echo "❌ Expected Linux, got $actual_os"
+          exit 1
+        fi
+        
+        echo "✅ Running on Linux as expected"
+        
+    - name: Test environment validation function behavior
+      run: |
+        echo "Testing environment validation function directly..."
+        
+        # Extract and test the validate_environment function
+        grep -A 50 "validate_environment()" setup-gpg-git.sh > validate_test.sh
+        echo "}" >> validate_test.sh
+        
+        # Add required functions and variables
+        cat > test_env.sh << 'EOF'
+        #!/bin/bash
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        BLUE='\033[0;34m'
+        NC='\033[0m'
+        
+        log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+        log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+        log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+        log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+        command_exists() { command -v "$1" >/dev/null 2>&1; }
+        EOF
+        
+        cat validate_test.sh >> test_env.sh
+        echo "validate_environment" >> test_env.sh
+        
+        chmod +x test_env.sh
+        
+        echo "Running validation function (should fail on Linux):"
+        if ./test_env.sh; then
+          echo "❌ Environment validation should have failed on Linux!"
+          exit 1
+        else
+          echo "✅ Environment validation correctly failed on Linux"
+        fi
+        
+    - name: Test argument parsing independence
+      run: |
+        echo "Testing that argument parsing works before environment validation..."
+        
+        # Test various flag combinations that should parse successfully
+        flags_to_test=(
+          "--help"
+          "-h" 
+          "--dry-run --help"
+          "--auto --help"
+          "--new --help"
+        )
+        
+        for flags in "${flags_to_test[@]}"; do
+          echo "Testing: ./setup-gpg-git.sh $flags"
+          if timeout 10s ./setup-gpg-git.sh $flags >/dev/null 2>&1; then
+            echo "✅ $flags works correctly"
+          else
+            echo "❌ $flags failed unexpectedly"
+            exit 1
+          fi
+        done
+        
+    - name: Test error message completeness
+      run: |
+        echo "Testing that error messages contain all required information..."
+        
+        # Capture full error output
+        error_output=$(./setup-gpg-git.sh --auto 2>&1 || true)
+        echo "Full error output:"
+        echo "$error_output"
+        echo "===================="
+        
+        # Check for all required elements
+        checks=(
+          "Unsupported operating system.*Linux"
+          "macOS.*Darwin"
+          "Linux.*package manager"
+          "Windows.*GPG4Win"
+          "Environment validation failed"
+        )
+        
+        for check in "${checks[@]}"; do
+          if echo "$error_output" | grep -E "$check" >/dev/null; then
+            echo "✅ Found: $check"
+          else
+            echo "❌ Missing: $check"
+            echo "Full output was:"
+            echo "$error_output"
+            exit 1
+          fi
+        done
+        
+        echo "✅ All required error message elements present"
 
   security:
     name: Security Scan

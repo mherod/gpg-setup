@@ -44,6 +44,91 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Validate environment compatibility
+validate_environment() {
+    log_info "Validating environment compatibility..."
+    
+    # Check operating system
+    local os_name
+    os_name=$(uname -s)
+    
+    if [[ "$os_name" != "Darwin" ]]; then
+        log_error "Unsupported operating system: $os_name"
+        log_error "This script is designed specifically for macOS (Darwin)"
+        echo ""
+        echo -e "${YELLOW}Supported environment:${NC}"
+        echo "  • macOS (any version with Homebrew support)"
+        echo ""
+        echo -e "${YELLOW}Your system:${NC}"
+        echo "  • OS: $os_name"
+        echo "  • Architecture: $(uname -m)"
+        echo ""
+        echo -e "${BLUE}For other platforms, consider:${NC}"
+        echo "  • Linux: Use your distribution's package manager for GPG setup"
+        echo "  • Windows: Use GPG4Win or Windows Subsystem for Linux"
+        echo ""
+        return 1
+    fi
+    
+    # Check macOS version (optional warning for very old versions)
+    local macos_version
+    if command_exists sw_vers; then
+        macos_version=$(sw_vers -productVersion)
+        log_success "macOS detected: $macos_version"
+        
+        # Extract major version (e.g., "13" from "13.2.1")
+        local major_version
+        major_version=$(echo "$macos_version" | cut -d. -f1)
+        
+        if [[ "$major_version" -lt 10 ]]; then
+            log_warning "Very old macOS version detected ($macos_version)"
+            log_warning "Some features may not work correctly on macOS < 10.x"
+        fi
+    else
+        log_warning "Could not determine macOS version (sw_vers not available)"
+    fi
+    
+    # Check for required system tools
+    local missing_tools=()
+    
+    if ! command_exists uname; then
+        missing_tools+=("uname")
+    fi
+    
+    if ! command_exists curl; then
+        missing_tools+=("curl")
+    fi
+    
+    if ! command_exists git; then
+        missing_tools+=("git")
+    fi
+    
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        log_error "Missing required system tools: ${missing_tools[*]}"
+        log_error "Please install the missing tools and try again"
+        return 1
+    fi
+    
+    # Check architecture (informational)
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        "x86_64")
+            log_info "Architecture: Intel (x86_64)"
+            ;;
+        "arm64")
+            log_info "Architecture: Apple Silicon (arm64)"
+            ;;
+        *)
+            log_warning "Unknown architecture: $arch"
+            log_warning "Script may work but hasn't been tested on this architecture"
+            ;;
+    esac
+    
+    log_success "Environment validation passed"
+    return 0
+}
+
 # Initialize paths based on Homebrew installation
 init_paths() {
     log_info "Detecting Homebrew installation..."
@@ -1953,6 +2038,13 @@ show_next_steps() {
 main() {
     # Parse command line arguments first
     parse_args "$@"
+    
+    # Validate environment compatibility early
+    if ! validate_environment; then
+        log_error "Environment validation failed. Cannot continue."
+        exit 1
+    fi
+    echo ""
     
     echo -e "${BLUE}GPG and Git Setup Script${NC}"
     if [[ "$NEW_KEY_MODE" == "true" ]]; then

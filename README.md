@@ -49,6 +49,14 @@ chmod +x setup-gpg-git.sh
 
 ## 📋 Requirements
 
+### **System Requirements**
+| Requirement | Details | Notes |
+|-------------|---------|-------|
+| **Operating System** | macOS (Darwin) | **Required** - Script validates OS and rejects non-macOS systems |
+| **Architecture** | Intel (x86_64) or Apple Silicon (arm64) | Both supported |
+| **macOS Version** | macOS 10.x or later | Older versions may have limited functionality |
+
+### **Software Dependencies**
 | Tool | Purpose | Installation |
 |------|---------|-------------|
 | **Homebrew** | Package manager | [brew.sh](https://brew.sh/) |
@@ -56,7 +64,7 @@ chmod +x setup-gpg-git.sh
 | **Keybase** *(optional)* | PGP key import/upload | [keybase.io](https://keybase.io/) |
 | **GitHub CLI** *(optional)* | GPG key upload to GitHub | Auto-installed via homebrew |
 
-> **Note**: Both Keybase and GitHub CLI are optional - the script works with existing GPG keys and can generate new ones. These tools enable automatic key upload to their respective platforms.
+> **Note**: The script includes comprehensive environment validation and will refuse to run on non-macOS systems. Keybase and GitHub CLI are optional - the script works with existing GPG keys and can generate new ones.
 
 ## 🎯 Quick Start
 
@@ -282,6 +290,27 @@ If `--new` mode seems to reuse existing keys:
 ./setup-gpg-git.sh --new --auto --dry-run  # Preview first
 ./setup-gpg-git.sh --new --auto             # Generate new key
 ```
+
+#### **Unsupported Operating System**
+The script includes environment validation and will refuse to run on non-macOS systems:
+```bash
+# Error on Linux/Windows:
+[ERROR] Unsupported operating system: Linux
+[ERROR] This script is designed specifically for macOS (Darwin)
+
+Supported environment:
+  • macOS (any version with Homebrew support)
+
+Your system:
+  • OS: Linux
+  • Architecture: x86_64
+
+For other platforms, consider:
+  • Linux: Use your distribution's package manager for GPG setup
+  • Windows: Use GPG4Win or Windows Subsystem for Linux
+```
+
+**Workaround**: Use `./setup-gpg-git.sh --help` to view documentation on any system.
 
 #### **Security Considerations**
 **Auto Mode Key Generation**:
