@@ -58,19 +58,33 @@ init_paths() {
     fi
 }
 
-# Validate PGP fingerprint format
+# Validate PGP fingerprint format (robust version)
 validate_fingerprint() {
     local fingerprint="$1"
     
-    # Remove spaces and convert to uppercase
-    fingerprint=$(echo "$fingerprint" | tr -d ' ' | tr '[:lower:]' '[:upper:]')
+    if [[ -z "$fingerprint" ]]; then
+        log_error "Empty fingerprint provided"
+        return 1
+    fi
+    
+    # Remove spaces, colons, and convert to uppercase
+    fingerprint=$(echo "$fingerprint" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+    
+    # Remove 0x prefix if present
+    fingerprint=${fingerprint#0X}
     
     # Check if it's a valid 40-character hex string
     if [[ ${#fingerprint} -eq 40 && "$fingerprint" =~ ^[A-F0-9]+$ ]]; then
         echo "$fingerprint"
         return 0
+    elif [[ ${#fingerprint} -eq 16 && "$fingerprint" =~ ^[A-F0-9]+$ ]]; then
+        # Accept 16-character short key IDs but warn
+        log_warning "Using short key ID (16 chars). Full fingerprint (40 chars) is recommended."
+        echo "$fingerprint"
+        return 0
     else
-        log_error "Invalid fingerprint format. Expected 40-character hex string."
+        log_error "Invalid fingerprint format. Expected 40-character hex string, got: '$fingerprint' (${#fingerprint} chars)"
+        log_error "Example: 8062BB876817BADB404DCD95ADD781F2D92DAA2E"
         return 1
     fi
 }
@@ -92,10 +106,33 @@ backup_gpg_config() {
     fi
 }
 
-# Check if key already exists
+# Check if key already exists (robust version)
 key_exists() {
     local fingerprint="$1"
-    gpg --list-keys "$fingerprint" >/dev/null 2>&1
+    
+    if [[ -z "$fingerprint" ]]; then
+        return 1
+    fi
+    
+    # Try multiple ways to check if key exists
+    # Method 1: Direct fingerprint lookup
+    if gpg --list-keys "$fingerprint" >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Method 2: Try with 0x prefix
+    if gpg --list-keys "0x$fingerprint" >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Method 3: Try short key ID (last 16 chars)
+    local short_key_id
+    short_key_id="${fingerprint: -16}"
+    if [[ ${#short_key_id} -eq 16 ]] && gpg --list-keys "$short_key_id" >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    return 1
 }
 
 # Dry run wrapper for commands
@@ -157,6 +194,11 @@ DESCRIPTION:
     • Auto-detect and configure git user name/email from keybase
     • Automatically select the best matching PGP key
     • Configure everything without requiring user input
+    
+    In interactive mode, if keybase import fails, the script will offer to:
+    • Generate a new GPG key with your git credentials
+    • Guide you through the key generation process
+    • Automatically configure the new key for git signing
 
 REQUIREMENTS:
     - Homebrew (https://brew.sh/)
@@ -281,21 +323,31 @@ EOF
 install_tools() {
     log_info "Installing required tools..."
     
+    local tools_installed=false
+    
     # Install GPG if not present
     if ! command_exists gpg; then
         log_info "Installing gnupg..."
         run_command brew install gnupg
+        tools_installed=true
+    else
+        log_info "gnupg already installed: $(gpg --version | head -1)"
     fi
     
     # Install pinentry-mac for native macOS integration
     if ! brew list pinentry-mac >/dev/null 2>&1; then
         log_info "Installing pinentry-mac for native macOS GUI..."
         run_command brew install pinentry-mac
+        tools_installed=true
     else
         log_info "pinentry-mac already installed"
     fi
     
-    log_success "Tools installation complete"
+    if [[ "$tools_installed" == "true" ]]; then
+        log_success "Tools installation complete"
+    else
+        log_success "All required tools already installed"
+    fi
 }
 
 # Fix GPG database issues
@@ -331,40 +383,89 @@ configure_gpg_agent() {
     run_command mkdir -p ~/.gnupg
     run_command chmod 700 ~/.gnupg
     
+    local config_updated=false
+    local expected_config="pinentry-program $PINENTRY_PATH
+default-cache-ttl 28800
+max-cache-ttl 86400"
+    
     if [[ "$DRY_RUN" == "true" ]]; then
         log_info "[DRY RUN] Would create ~/.gnupg/gpg-agent.conf with pinentry-program: $PINENTRY_PATH"
     else
-        cat > ~/.gnupg/gpg-agent.conf << EOF
+        # Check if configuration needs updating
+        if [[ ! -f ~/.gnupg/gpg-agent.conf ]]; then
+            log_info "Creating new GPG agent configuration"
+            config_updated=true
+        else
+            local current_config
+            current_config=$(cat ~/.gnupg/gpg-agent.conf 2>/dev/null || echo "")
+            if [[ "$current_config" != "$expected_config" ]]; then
+                log_info "Updating GPG agent configuration"
+                config_updated=true
+            else
+                log_info "GPG agent configuration already correct"
+            fi
+        fi
+        
+        if [[ "$config_updated" == "true" ]]; then
+            cat > ~/.gnupg/gpg-agent.conf << EOF
 pinentry-program $PINENTRY_PATH
 default-cache-ttl 28800
 max-cache-ttl 86400
 EOF
+        fi
     fi
     
-    # Reload GPG agent
+    # Reload GPG agent (always do this to ensure it's running)
     run_command gpgconf --reload gpg-agent
     
-    log_success "GPG agent configured with pinentry-mac"
+    if [[ "$config_updated" == "true" || "$DRY_RUN" == "true" ]]; then
+        log_success "GPG agent configured with pinentry-mac"
+    else
+        log_success "GPG agent already properly configured"
+    fi
 }
 
-# Find best matching key automatically
-find_best_key() {
+# Find best matching keys automatically (returns prioritized list)
+find_best_keys() {
     local current_email
     current_email=$(git config --global user.email 2>/dev/null)
     
     if [[ -z "$current_email" ]]; then
-        log_error "No git email configured. Set with: git config --global user.email \"your@email.com\""
+        log_error "No git email configured. Set with: git config --global user.email \"your@email.com\"" >&2
         return 1
     fi
     
-    log_info "Looking for best key match for git email: $current_email"
+    log_info "Looking for best key match for git email: $current_email" >&2
     
-    # Get keybase keys
+    # Check keybase accessibility first
+    if ! keybase status >/dev/null 2>&1; then
+        log_error "Keybase is not logged in or accessible" >&2
+        log_info "Please run: keybase login" >&2
+        return 1
+    fi
+    
+    # Get keybase keys with retry logic
     local keybase_output
-    keybase_output=$(keybase pgp list 2>/dev/null)
+    local retry_count=0
+    local max_retries=3
+    
+    while [[ $retry_count -lt $max_retries ]]; do
+        keybase_output=$(keybase pgp list 2>/dev/null)
+        
+        if [[ -n "$keybase_output" ]]; then
+            break
+        else
+            ((retry_count++))
+            if [[ $retry_count -lt $max_retries ]]; then
+                log_warning "Failed to get keybase keys, retrying... ($retry_count/$max_retries)" >&2
+                sleep 1
+            fi
+        fi
+    done
     
     if [[ -z "$keybase_output" ]]; then
-        log_error "No keybase PGP keys found"
+        log_error "No keybase PGP keys found after $max_retries attempts" >&2
+        log_info "Please ensure you have PGP keys in keybase: keybase pgp gen" >&2
         return 1
     fi
     
@@ -383,40 +484,278 @@ find_best_key() {
     local key_num=1
     
     for fp in "${temp_fingerprints[@]}"; do
+        # Validate fingerprint before processing
+        if ! validate_fingerprint "$fp" >/dev/null 2>&1; then
+            log_warning "Skipping invalid fingerprint: $fp" >&2
+            ((key_num++))
+            continue
+        fi
+        
         if gpg --list-keys --with-colons "$fp" >/dev/null 2>&1; then
             local key_info uids
             key_info=$(gpg --list-keys --with-colons "$fp" 2>/dev/null)
+            
+            if [[ -z "$key_info" ]]; then
+                log_warning "Could not get key info for $fp" >&2
+                ((key_num++))
+                continue
+            fi
+            
             uids=$(echo "$key_info" | awk -F: '/^uid:/ {print $10}' | sed 's/\\x3a/:/g')
             
             # Check if any UID contains the current git email
-            if echo "$uids" | grep -i "$current_email" >/dev/null 2>&1; then
-                log_info "Found matching key #$key_num: $fp"
+            if [[ -n "$uids" ]] && echo "$uids" | grep -i "$current_email" >/dev/null 2>&1; then
+                log_info "Found matching key #$key_num: $fp" >&2
                 matching_keys+=("$fp")
             fi
+        else
+            log_info "Key $fp not imported to local GPG keyring, skipping email check" >&2
         fi
         ((key_num++))
     done
     
-    if [[ ${#matching_keys[@]} -eq 0 ]]; then
-        log_warning "No keys found matching git email $current_email"
-        log_info "Will use the first available key instead"
+    # Return prioritized list of keys
+    local prioritized_keys=()
+    
+    if [[ ${#matching_keys[@]} -gt 0 ]]; then
+        log_info "Found ${#matching_keys[@]} keys matching git email $current_email" >&2
+        prioritized_keys=("${matching_keys[@]}")
+        # Add non-matching keys as fallbacks
+        for fp in "${temp_fingerprints[@]}"; do
+            local already_added=false
+            for existing in "${prioritized_keys[@]}"; do
+                if [[ "$existing" == "$fp" ]]; then
+                    already_added=true
+                    break
+                fi
+            done
+            if [[ "$already_added" == "false" ]]; then
+                prioritized_keys+=("$fp")
+            fi
+        done
+    else
+        log_warning "No keys found matching git email $current_email" >&2
+        log_info "Will try all available keys in order" >&2
+        prioritized_keys=("${temp_fingerprints[@]}")
+    fi
+    
+    if [[ ${#prioritized_keys[@]} -eq 0 ]]; then
+        log_error "No keys available" >&2
+        return 1
+    fi
+    
+    # Output all keys, one per line
+    for key in "${prioritized_keys[@]}"; do
+        echo "$key"
+    done
+    return 0
+}
+
+# Try importing keys with fallback logic
+try_import_best_key() {
+    log_info "Finding and importing best matching key..."
+    
+    # Get prioritized list of keys
+    local candidate_keys
+    if ! candidate_keys=$(find_best_keys); then
+        log_error "No candidate keys found"
+        return 1
+    fi
+    
+    # Convert to array
+    local key_array=()
+    while IFS= read -r key; do
+        if [[ -n "$key" ]]; then
+            key_array+=("$key")
+        fi
+    done <<< "$candidate_keys"
+    
+    log_info "Found ${#key_array[@]} candidate keys, trying in priority order..."
+    
+    # Try each key until one succeeds
+    local attempt=1
+    for fingerprint in "${key_array[@]}"; do
+        log_info "Trying key $attempt/${#key_array[@]}: $fingerprint"
         
-        # Import first available key
-        if [[ ${#temp_fingerprints[@]} -gt 0 ]]; then
-            echo "${temp_fingerprints[0]}"
-            return 0
+        # Attempt to import the key
+        local key_id
+        if key_id=$(import_keybase_key "$fingerprint" 2>/dev/null); then
+            if [[ -n "$key_id" ]]; then
+                log_success "Successfully imported key $attempt/${#key_array[@]}: $key_id"
+                echo "$key_id"
+                return 0
+            else
+                log_warning "Key $fingerprint imported but key ID is empty, trying next..."
+            fi
         else
-            log_error "No keys available"
+            log_warning "Failed to import key $fingerprint, trying next..."
+        fi
+        
+        ((attempt++))
+    done
+    
+    log_error "Failed to import any of the ${#key_array[@]} candidate keys"
+    return 1
+}
+
+# Generate a new GPG key interactively
+generate_new_gpg_key() {
+    log_info "Generating a new GPG key..."
+    
+    # Get user details
+    local user_name user_email
+    user_name=$(git config --global user.name 2>/dev/null)
+    user_email=$(git config --global user.email 2>/dev/null)
+    
+    # Prompt for name if not set
+    if [[ -z "$user_name" ]]; then
+        echo -e "${YELLOW}Enter your full name:${NC}"
+        read -r user_name
+        if [[ -z "$user_name" ]]; then
+            log_error "Name is required for GPG key generation"
             return 1
         fi
-    elif [[ ${#matching_keys[@]} -eq 1 ]]; then
-        log_success "Perfect match found: ${matching_keys[0]}"
-        echo "${matching_keys[0]}"
-        return 0
     else
-        log_info "Multiple matching keys found, using the first one: ${matching_keys[0]}"
-        echo "${matching_keys[0]}"
+        echo -e "${BLUE}Using existing git name: $user_name${NC}"
+        echo -e "${YELLOW}Press Enter to use this name, or type a new one:${NC}"
+        read -r new_name
+        if [[ -n "$new_name" ]]; then
+            user_name="$new_name"
+        fi
+    fi
+    
+    # Prompt for email if not set
+    if [[ -z "$user_email" ]]; then
+        echo -e "${YELLOW}Enter your email address:${NC}"
+        read -r user_email
+        if [[ -z "$user_email" ]]; then
+            log_error "Email is required for GPG key generation"
+            return 1
+        fi
+    else
+        echo -e "${BLUE}Using existing git email: $user_email${NC}"
+        echo -e "${YELLOW}Press Enter to use this email, or type a new one:${NC}"
+        read -r new_email
+        if [[ -n "$new_email" ]]; then
+            user_email="$new_email"
+        fi
+    fi
+    
+    # Key parameters
+    local key_type="RSA"
+    local key_length="4096"
+    local expire_date="2y"  # 2 years
+    
+    echo -e "${BLUE}GPG Key Parameters:${NC}"
+    echo "  Name: $user_name"
+    echo "  Email: $user_email"
+    echo "  Type: $key_type"
+    echo "  Length: $key_length bits"
+    echo "  Expires: $expire_date"
+    echo ""
+    
+    echo -e "${YELLOW}Generate this GPG key? (y/N):${NC}"
+    read -r confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        log_info "GPG key generation cancelled"
+        return 1
+    fi
+    
+    # Create batch file for unattended generation
+    local batch_file="/tmp/gpg_gen_batch_$$"
+    cat > "$batch_file" << EOF
+%echo Generating GPG key...
+Key-Type: $key_type
+Key-Length: $key_length
+Subkey-Type: $key_type
+Subkey-Length: $key_length
+Name-Real: $user_name
+Name-Email: $user_email
+Expire-Date: $expire_date
+Passphrase: 
+%commit
+%echo GPG key generation complete
+EOF
+    
+    # Generate the key
+    log_info "Generating GPG key (this may take a while)..."
+    echo -e "${YELLOW}Note: You'll be prompted to set a passphrase for your new key.${NC}"
+    
+    if gpg --batch --generate-key "$batch_file" 2>/dev/null; then
+        log_success "GPG key generated successfully!"
+        
+        # Clean up batch file
+        rm -f "$batch_file"
+        
+        # Get the new key ID
+        local new_key_fingerprint new_key_id
+        new_key_fingerprint=$(gpg --list-secret-keys --with-colons "$user_email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | head -1)
+        
+        if [[ -n "$new_key_fingerprint" ]]; then
+            new_key_id=$(gpg --list-keys --with-colons "$new_key_fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+            log_success "New key ID: $new_key_id"
+            log_info "Fingerprint: $new_key_fingerprint"
+            
+            # Update git config if needed
+            if [[ -z "$(git config --global user.name 2>/dev/null)" ]]; then
+                git config --global user.name "$user_name"
+                log_info "Set git user.name: $user_name"
+            fi
+            if [[ -z "$(git config --global user.email 2>/dev/null)" ]]; then
+                git config --global user.email "$user_email"
+                log_info "Set git user.email: $user_email"
+            fi
+            
+            echo "$new_key_id"
+            return 0
+        else
+            log_error "Could not determine new key ID"
+            return 1
+        fi
+    else
+        log_error "Failed to generate GPG key"
+        rm -f "$batch_file"
+        return 1
+    fi
+}
+
+# Try importing from keybase or generate new key (interactive mode)
+try_import_or_generate_key() {
+    if [[ "$AUTO_MODE" == "true" ]]; then
+        # Auto mode: only try keybase import
+        try_import_best_key
+        return $?
+    fi
+    
+    # Interactive mode: try keybase first, then offer to generate
+    log_info "Attempting to import keys from keybase..."
+    
+    if key_id=$(try_import_best_key 2>/dev/null); then
+        echo "$key_id"
         return 0
+    fi
+    
+    # Keybase import failed, offer to generate new key
+    log_warning "Failed to import any keys from keybase"
+    echo ""
+    echo -e "${YELLOW}Would you like to generate a new GPG key instead? (y/N):${NC}"
+    read -r generate_confirm
+    
+    if [[ "$generate_confirm" == "y" || "$generate_confirm" == "Y" ]]; then
+        if key_id=$(generate_new_gpg_key); then
+            echo "$key_id"
+            return 0
+        else
+            log_error "Failed to generate new GPG key"
+            return 1
+        fi
+    else
+        log_error "No GPG key available for git signing"
+        log_info "You can:"
+        log_info "1. Set up keybase PGP keys: keybase pgp gen"
+        log_info "2. Run this script again and choose to generate a new key"
+        log_info "3. Manually generate a GPG key: gpg --gen-key"
+        return 1
     fi
 }
 
@@ -655,12 +994,19 @@ import_keybase_key() {
     
     # Check if key already exists
     if key_exists "$fingerprint"; then
-        log_warning "Key $fingerprint already imported"
+        log_info "Key $fingerprint already imported, retrieving key ID..."
         # Still return the key ID for git config
         local short_key_id
         short_key_id=$(gpg --list-keys --with-colons "$fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
-        echo "$short_key_id"
-        return 0
+        
+        if [[ -n "$short_key_id" ]]; then
+            log_success "Using existing key with ID: $short_key_id"
+            echo "$short_key_id"
+            return 0
+        else
+            log_error "Could not determine key ID for existing key"
+            return 1
+        fi
     fi
     
     log_info "Importing key $fingerprint from keybase..."
@@ -672,32 +1018,69 @@ import_keybase_key() {
         echo "DRYRUN1234567890ABCD"
         return 0
     else
-        if keybase pgp export -q "$fingerprint" | gpg --import; then
-            log_success "Public key imported"
-        else
-            log_error "Failed to import public key"
+        # Check if keybase is accessible
+        if ! keybase status >/dev/null 2>&1; then
+            log_error "Keybase is not logged in or accessible"
+            log_info "Please run: keybase login"
             return 1
         fi
         
-        # Import secret key
-        if keybase pgp export --secret -q "$fingerprint" | gpg --import --batch; then
+        # Import public key with retries
+        local import_success=false
+        local retry_count=0
+        local max_retries=3
+        
+        while [[ $retry_count -lt $max_retries && "$import_success" == "false" ]]; do
+            if keybase pgp export -q "$fingerprint" 2>/dev/null | gpg --import --quiet 2>/dev/null; then
+                log_success "Public key imported"
+                import_success=true
+            else
+                ((retry_count++))
+                if [[ $retry_count -lt $max_retries ]]; then
+                    log_warning "Public key import failed, retrying... ($retry_count/$max_retries)"
+                    sleep 1
+                fi
+            fi
+        done
+        
+        if [[ "$import_success" == "false" ]]; then
+            log_error "Failed to import public key after $max_retries attempts"
+            return 1
+        fi
+        
+        # Import secret key with error handling
+        log_info "Importing secret key (may require passphrase)..."
+        if keybase pgp export --secret -q "$fingerprint" 2>/dev/null | gpg --import --batch --quiet 2>/dev/null; then
             log_success "Secret key imported"
         else
-            log_warning "Secret key import failed (this may require interactive input)"
+            log_warning "Secret key import failed or requires interactive input"
+            log_info "You can manually import the secret key later if needed"
         fi
     fi
     
-    # Get the short key ID for git config
+    # Get the short key ID for git config with retry logic
     local short_key_id
-    short_key_id=$(gpg --list-keys --with-colons "$fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+    local retry_count=0
+    local max_retries=3
     
-    if [[ -n "$short_key_id" ]]; then
-        log_info "Short key ID: $short_key_id"
-        echo "$short_key_id"
-    else
-        log_error "Could not determine short key ID"
-        return 1
-    fi
+    while [[ $retry_count -lt $max_retries ]]; do
+        short_key_id=$(gpg --list-keys --with-colons "$fingerprint" 2>/dev/null | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+        
+        if [[ -n "$short_key_id" ]]; then
+            log_info "Short key ID: $short_key_id"
+            echo "$short_key_id"
+            return 0
+        else
+            ((retry_count++))
+            if [[ $retry_count -lt $max_retries ]]; then
+                log_warning "Could not determine short key ID, retrying... ($retry_count/$max_retries)"
+                sleep 1
+            fi
+        fi
+    done
+    
+    log_error "Could not determine short key ID after $max_retries attempts"
+    return 1
 }
 
 # Configure git signing
@@ -711,17 +1094,49 @@ configure_git_signing() {
     
     log_info "Configuring git for GPG signing..."
     
+    # Check current configuration
+    local current_signing_key current_gpg_program current_commit_sign
+    current_signing_key=$(git config --global user.signingkey 2>/dev/null || echo "")
+    current_gpg_program=$(git config --global gpg.program 2>/dev/null || echo "")
+    current_commit_sign=$(git config --global commit.gpgsign 2>/dev/null || echo "")
+    
+    local changes_made=false
+    
     # Remove any SSH signing configuration
     run_command git config --global --unset gpg.format 2>/dev/null || true
     run_command git config --global --unset gpg.ssh.program 2>/dev/null || true  
     run_command git config --global --unset gpg.ssh.allowedsignersfile 2>/dev/null || true
     
-    # Set GPG signing configuration
-    run_command git config --global user.signingkey "$key_id"
-    run_command git config --global gpg.program "$GPG_PATH"
-    run_command git config --global commit.gpgsign true
+    # Set GPG signing configuration only if different
+    if [[ "$current_signing_key" != "$key_id" ]]; then
+        run_command git config --global user.signingkey "$key_id"
+        log_info "Updated signing key: $current_signing_key → $key_id"
+        changes_made=true
+    else
+        log_info "Signing key already configured: $key_id"
+    fi
     
-    log_success "Git configured for GPG signing with key $key_id"
+    if [[ "$current_gpg_program" != "$GPG_PATH" ]]; then
+        run_command git config --global gpg.program "$GPG_PATH"
+        log_info "Updated GPG program: $current_gpg_program → $GPG_PATH"
+        changes_made=true
+    else
+        log_info "GPG program already configured: $GPG_PATH"
+    fi
+    
+    if [[ "$current_commit_sign" != "true" ]]; then
+        run_command git config --global commit.gpgsign true
+        log_info "Enabled automatic commit signing"
+        changes_made=true
+    else
+        log_info "Automatic commit signing already enabled"
+    fi
+    
+    if [[ "$changes_made" == "true" ]]; then
+        log_success "Git configured for GPG signing with key $key_id"
+    else
+        log_success "Git already properly configured for GPG signing with key $key_id"
+    fi
 }
 
 # Verify configuration
@@ -813,16 +1228,23 @@ show_next_steps() {
         echo -e "\n${GREEN}Automatic setup completed successfully!${NC}"
         echo "Your git is now configured for automatic GPG signing."
         echo ""
-        echo -e "${BLUE}What was configured:${NC}"
-        echo "• GPG tools installed and configured"
-        echo "• Best matching key selected and imported"
-        echo "• Git configured for automatic commit signing"
-        echo "• Global gitignore configured"
+        echo -e "${BLUE}Configuration verified:${NC}"
+        echo "• GPG tools: $(command_exists gpg && echo "✓ installed" || echo "✗ missing")"
+        echo "• Pinentry-mac: $(brew list pinentry-mac >/dev/null 2>&1 && echo "✓ installed" || echo "✗ missing")"
+        echo "• GPG agent: $(pgrep gpg-agent >/dev/null && echo "✓ running" || echo "⚠ not running")"
+        echo "• Git signing: $(git config --global commit.gpgsign 2>/dev/null | grep -q true && echo "✓ enabled" || echo "✗ disabled")"
+        local current_key
+        current_key=$(git config --global user.signingkey 2>/dev/null)
+        if [[ -n "$current_key" ]]; then
+            echo "• Signing key: ✓ configured ($current_key)"
+        else
+            echo "• Signing key: ✗ not configured"
+        fi
         echo ""
     else
         echo -e "\n${BLUE}Next steps:${NC}"
         echo "1. Make a test commit to verify GPG signing works"
-        echo "2. When prompted, enter your keybase passphrase in the GUI dialog"
+        echo "2. When prompted, enter your passphrase in the GUI dialog"
         echo "3. Your commits will now be automatically signed"
         echo ""
         echo "To manually set ultimate trust on your key (optional):"
@@ -831,6 +1253,10 @@ show_next_steps() {
         echo "  > 5 (ultimate trust)"
         echo "  > y"
         echo "  > quit"
+        echo ""
+        echo "Note: If you generated a new key, you may want to:"
+        echo "• Upload it to a keyserver: gpg --send-keys <your-key-id>"
+        echo "• Add it to your GitHub account for verification"
         echo ""
     fi
     
@@ -875,34 +1301,30 @@ main() {
     echo ""
     if [[ "$DRY_RUN" != "true" ]]; then
         if [[ "$AUTO_MODE" == "true" ]]; then
-            # Automatic key selection
-            log_info "Auto mode: Selecting best key automatically..."
-            if ! fingerprint=$(find_best_key); then
-                log_error "Failed to find suitable key automatically"
+            # Automatic key selection with fallback
+            log_info "Auto mode: Finding and importing best key automatically..."
+            if ! key_id=$(try_import_best_key); then
+                log_error "Failed to find and import any suitable key automatically"
                 exit 1
             fi
-            log_success "Auto-selected key: $fingerprint"
+            log_success "Auto-selected and imported key: $key_id"
         else
-            # Interactive key selection
-            list_keybase_keys
-            echo ""
-            echo -e "${YELLOW}Enter the PGP fingerprint of the key you want to use for git signing:${NC}"
-            read -r fingerprint
-            
-            if [[ -z "$fingerprint" ]]; then
-                log_error "No fingerprint provided"
+            # Interactive mode: try keybase first, then offer to generate new key
+            if ! key_id=$(try_import_or_generate_key); then
+                log_error "No GPG key could be obtained"
                 exit 1
             fi
         fi
     else
-        fingerprint="ABCDEF1234567890ABCDEF1234567890ABCDEF12"
-        log_info "[DRY RUN] Using dummy fingerprint for demonstration"
-    fi
-    
-    # Import the key
-    if ! key_id=$(import_keybase_key "$fingerprint"); then
-        log_error "Failed to import key"
-        exit 1
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            # Dry run auto mode
+            log_info "[DRY RUN] Would find and import best key automatically"
+            key_id="DRYRUN1234567890ABCD"
+        else
+            # Dry run manual mode  
+            log_info "[DRY RUN] Would attempt to import from keybase or generate new key"
+            key_id="DRYRUN1234567890ABCD"
+        fi
     fi
     
     # Configure git
