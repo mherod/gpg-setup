@@ -22,6 +22,7 @@ chmod +x setup-gpg-git.sh
 
 ### **Core Functionality**
 - ✅ **Automatic Mode** - Zero-config setup with intelligent existing key detection
+- ✅ **New Key Mode** - Always generate fresh GPG key (skip existing detection)
 - ✅ **Interactive Mode** - Guided setup with manual key selection
 - ✅ **Existing Key Detection** - Uses your current GPG keys if properly configured
 - ✅ **Auto Tool Install** - Installs keybase and GitHub CLI automatically in auto mode
@@ -66,6 +67,18 @@ chmod +x setup-gpg-git.sh
 ./setup-gpg-git.sh --auto --dry-run
 ```
 
+### **New Key Mode** (Fresh Start)
+```bash
+# Always generate a new GPG key (skip existing key detection)
+./setup-gpg-git.sh --new
+
+# Combine with auto mode for zero-config new key generation
+./setup-gpg-git.sh --new --auto
+
+# Preview new key generation
+./setup-gpg-git.sh --new --dry-run
+```
+
 ### **Interactive Mode**
 ```bash
 # Guided setup with manual key selection
@@ -91,6 +104,14 @@ chmod +x setup-gpg-git.sh
 6. **Git Configuration** - Sets up automatic commit signing
 7. **Platform Integration** - Uploads keys to GitHub and Keybase for full integration
 8. **Verification** - Tests the complete setup
+
+### **New Key Mode Workflow**
+1. **Environment Setup** - Same as automatic mode
+2. **Tool Installation** - Same as automatic mode
+3. **Fresh Key Generation** - Always creates new 4096-bit RSA GPG key
+4. **Git Configuration** - Sets up automatic commit signing with new key
+5. **Platform Integration** - Uploads new key to GitHub and Keybase
+6. **Verification** - Tests the complete setup
 
 ### **Interactive Mode Workflow**
 1. **Environment Setup** - Same as automatic mode
@@ -142,8 +163,14 @@ chmod +x setup-gpg-git.sh
 | Flag | Description | Use Case |
 |------|-------------|----------|
 | `--auto` | Fully automated mode | CI/CD, scripted setups |
+| `--new` | Always generate new GPG key | Fresh start, clean setup |
 | `--dry-run` | Preview mode (no changes) | Testing, validation |
 | `--help` | Show detailed help | Learning, reference |
+
+### **Flag Combinations**
+- `--auto --new` - Zero-config new key generation
+- `--new --dry-run` - Preview key generation process
+- `--auto --dry-run` - Preview automatic setup
 
 ### **Generated GPG Key Specifications**
 ```bash

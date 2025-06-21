@@ -9,6 +9,7 @@ set -e
 # Global variables
 DRY_RUN=false
 AUTO_MODE=false
+NEW_KEY_MODE=false
 BREW_PREFIX=""
 PINENTRY_PATH=""
 GPG_PATH=""
@@ -159,6 +160,11 @@ parse_args() {
                 log_info "Automatic mode enabled - will make best decisions without prompts"
                 shift
                 ;;
+            --new)
+                NEW_KEY_MODE=true
+                log_info "New key mode enabled - will always generate a fresh GPG key"
+                shift
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -183,6 +189,7 @@ USAGE:
 OPTIONS:
     --dry-run    Show what would be done without making changes
     --auto       Automatic mode - make best decisions without user prompts
+    --new        Always generate a new GPG key (skip existing key detection)
     --help, -h   Show this help message
 
 DESCRIPTION:
@@ -208,6 +215,13 @@ DESCRIPTION:
     • Offer to generate a new GPG key if needed
     • Upload new keys to Keybase and GitHub
     • Guide you through the key generation process
+    
+    With --new flag, the script will:
+    • Skip all existing key detection and configuration checks
+    • Always generate a fresh GPG key with your git credentials
+    • Set the new key as the default signing key
+    • Upload to GitHub and Keybase if available
+    • Provide a clean slate GPG setup
 
 REQUIREMENTS:
     - Homebrew (https://brew.sh/)
@@ -1217,6 +1231,119 @@ try_import_or_generate_key() {
     fi
 }
 
+# Generate new GPG key mode - always creates a fresh key
+generate_new_key_mode() {
+    log_info "New key mode: Generating fresh GPG key..."
+    
+    # Get git configuration for key generation
+    local user_name user_email
+    user_name=$(git config --global user.name 2>/dev/null)
+    user_email=$(git config --global user.email 2>/dev/null)
+    
+    # Ensure we have name and email
+    if [[ -z "$user_name" ]]; then
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            log_error "Git user.name not configured. Set with: git config --global user.name \"Your Name\""
+            return 1
+        else
+            echo -e "${YELLOW}Enter your full name:${NC}"
+            read -r user_name
+            if [[ -z "$user_name" ]]; then
+                log_error "Name is required for GPG key generation"
+                return 1
+            fi
+            # Set it for future use
+            git config --global user.name "$user_name"
+        fi
+    fi
+    
+    if [[ -z "$user_email" ]]; then
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            log_error "Git user.email not configured. Set with: git config --global user.email \"you@example.com\""
+            return 1
+        else
+            echo -e "${YELLOW}Enter your email address:${NC}"
+            read -r user_email
+            if [[ -z "$user_email" ]]; then
+                log_error "Email is required for GPG key generation"
+                return 1
+            fi
+            # Set it for future use
+            git config --global user.email "$user_email"
+        fi
+    fi
+    
+    log_info "Generating new GPG key for: $user_name <$user_email>"
+    
+    if [[ "$AUTO_MODE" != "true" ]]; then
+        echo ""
+        echo -e "${BLUE}This will create a new 4096-bit RSA GPG key with 2-year expiration.${NC}"
+        echo -e "${YELLOW}Continue with key generation? (Y/n):${NC}"
+        read -r confirm_generation
+        if [[ "$confirm_generation" == "n" || "$confirm_generation" == "N" ]]; then
+            log_info "Key generation cancelled"
+            return 1
+        fi
+    fi
+    
+    # Create batch file for unattended generation
+    local batch_file="/tmp/gpg_gen_batch_new_$$"
+    cat > "$batch_file" << EOF
+%echo Generating new GPG key...
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: $user_name
+Name-Email: $user_email
+Expire-Date: 2y
+Passphrase: 
+%commit
+%echo GPG key generation complete
+EOF
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would generate new GPG key with batch file"
+        log_info "[DRY RUN] Key details: $user_name <$user_email>, RSA 4096-bit, 2y expiration"
+        rm -f "$batch_file"
+        echo "DRYRUN1234567890ABCD"
+        return 0
+    fi
+    
+    # Generate the key
+    log_info "Generating GPG key (this may take a while)..."
+    if [[ "$AUTO_MODE" != "true" ]]; then
+        echo -e "${YELLOW}Note: You'll be prompted to set a passphrase for your new key.${NC}"
+    fi
+    
+    if gpg --batch --generate-key "$batch_file" 2>/dev/null; then
+        log_success "New GPG key generated successfully!"
+        
+        # Clean up batch file
+        rm -f "$batch_file"
+        
+        # Get the new key ID
+        local new_key_fingerprint new_key_id
+        new_key_fingerprint=$(gpg --list-secret-keys --with-colons "$user_email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | head -1)
+        
+        if [[ -n "$new_key_fingerprint" ]]; then
+            new_key_id=$(gpg --list-keys --with-colons "$new_key_fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+            log_success "New key ID: $new_key_id"
+            log_info "Fingerprint: $new_key_fingerprint"
+            
+            echo "$new_key_id"
+            return 0
+        else
+            log_error "Could not determine new key ID"
+            return 1
+        fi
+    else
+        log_error "Failed to generate GPG key"
+        rm -f "$batch_file"
+        return 1
+    fi
+}
+
 # List available keybase keys
 list_keybase_keys() {
     if [[ "$AUTO_MODE" == "true" ]]; then
@@ -1761,7 +1888,10 @@ main() {
     parse_args "$@"
     
     echo -e "${BLUE}GPG and Git Setup Script${NC}"
-    if [[ "$AUTO_MODE" == "true" ]]; then
+    if [[ "$NEW_KEY_MODE" == "true" ]]; then
+        echo "New key mode: This script will generate a fresh GPG key and configure git signing"
+        echo "Skipping existing key detection and always creating a new key..."
+    elif [[ "$AUTO_MODE" == "true" ]]; then
         echo "Auto mode: This script will automatically configure GPG signing for git commits"
         echo "Checking existing configuration, using existing keys, or importing from keybase as needed..."
     else
@@ -1786,7 +1916,15 @@ main() {
     configure_gpg_agent
     
     echo ""
-    if [[ "$DRY_RUN" != "true" ]]; then
+    if [[ "$NEW_KEY_MODE" == "true" ]]; then
+        # New key mode: always generate a fresh key
+        log_info "New key mode: Generating fresh GPG key..."
+        if ! key_id=$(generate_new_key_mode); then
+            log_error "Failed to generate new GPG key"
+            exit 1
+        fi
+        log_success "Generated new GPG key: $key_id"
+    elif [[ "$DRY_RUN" != "true" ]]; then
         if [[ "$AUTO_MODE" == "true" ]]; then
             # Automatic key selection with fallback
             log_info "Auto mode: Finding and importing best key automatically..."
@@ -1803,7 +1941,11 @@ main() {
             fi
         fi
     else
-        if [[ "$AUTO_MODE" == "true" ]]; then
+        if [[ "$NEW_KEY_MODE" == "true" ]]; then
+            # Dry run new key mode
+            log_info "[DRY RUN] Would generate new GPG key"
+            key_id="DRYRUN1234567890ABCD"
+        elif [[ "$AUTO_MODE" == "true" ]]; then
             # Dry run auto mode
             log_info "[DRY RUN] Would find and import best key automatically"
             key_id="DRYRUN1234567890ABCD"
