@@ -40,3 +40,6 @@ pids
 test_*
 *.test
 /.claude
+
+# Claude Code session notes
+CLAUDE.local.md
