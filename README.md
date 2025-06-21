@@ -2,10 +2,8 @@
 
 [![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/shellcheck.yml)
 [![CI](https://github.com/mherod/gpg-setup/workflows/CI/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/mherod/gpg-setup?include_prereleases&label=latest)](https://github.com/mherod/gpg-setup/releases)
-[![License](https://img.shields.io/github/license/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/blob/main/LICENSE)
 
-A comprehensive, production-ready script that automates GPG and Git signing setup on macOS. Supports both Keybase key import and new key generation with intelligent fallback logic.
+A comprehensive, production-ready script that automates GPG and Git signing setup on macOS. Works with existing GPG keys, optionally imports from Keybase, or generates new keys with intelligent fallback logic.
 
 ## 🚀 Quick Install
 
@@ -23,9 +21,10 @@ chmod +x setup-gpg-git.sh
 ## ✨ Features
 
 ### **Core Functionality**
-- ✅ **Automatic Mode** - Zero-config setup with intelligent key selection
+- ✅ **Automatic Mode** - Zero-config setup with intelligent existing key detection
 - ✅ **Interactive Mode** - Guided setup with manual key selection
-- ✅ **Smart Fallback** - Generates new GPG key if Keybase import fails
+- ✅ **Existing Key Detection** - Uses your current GPG keys if properly configured
+- ✅ **Smart Fallback** - Keybase import → new key generation if needed
 - ✅ **Multi-Key Support** - Tries multiple keys until one succeeds
 - ✅ **Robust Error Handling** - Comprehensive retry logic and validation
 
@@ -47,16 +46,16 @@ chmod +x setup-gpg-git.sh
 | Tool | Purpose | Installation |
 |------|---------|-------------|
 | **Homebrew** | Package manager | [brew.sh](https://brew.sh/) |
-| **Keybase** *(optional)* | PGP key source | [keybase.io](https://keybase.io/) |
 | **Git** | Version control | Usually pre-installed |
+| **Keybase** *(optional)* | PGP key import | [keybase.io](https://keybase.io/) |
 
-> **Note**: Keybase is optional in interactive mode - the script can generate new GPG keys if needed.
+> **Note**: Keybase is completely optional - the script works with existing GPG keys and can generate new ones if needed.
 
 ## 🎯 Quick Start
 
 ### **Automatic Mode** (Recommended)
 ```bash
-# Fully automated setup - finds best key and configures everything
+# Fully automated setup - uses existing keys or finds best match
 ./setup-gpg-git.sh --auto
 
 # Preview what auto mode would do
@@ -81,19 +80,20 @@ chmod +x setup-gpg-git.sh
 
 ### **Automatic Mode Workflow**
 1. **Environment Setup** - Detects Homebrew, installs tools, configures GPG agent
-2. **User Configuration** - Auto-configures git name/email from Keybase
-3. **Smart Key Selection** - Finds keys matching your git email
+2. **Configuration Check** - Validates existing GPG setup and git configuration
+3. **Smart Key Selection** - Uses existing keys or finds best match from Keybase
 4. **Automated Import** - Tries keys in priority order until one succeeds
 5. **Git Configuration** - Sets up automatic commit signing
 6. **Verification** - Tests the complete setup
 
 ### **Interactive Mode Workflow**
 1. **Environment Setup** - Same as automatic mode
-2. **Key Discovery** - Shows detailed information about available keys
-3. **Smart Recommendations** - Highlights keys matching your git email
-4. **Fallback Options** - Offers to generate new key if Keybase fails
-5. **Manual Selection** - User chooses key or approves generation
-6. **Configuration & Testing** - Same as automatic mode
+2. **Configuration Check** - Reviews existing setup and offers to use if valid
+3. **Key Discovery** - Shows existing GPG keys and Keybase keys if available
+4. **Smart Recommendations** - Highlights keys matching your git email
+5. **Fallback Options** - Offers to generate new key if needed
+6. **Manual Selection** - User chooses key or approves generation
+7. **Configuration & Testing** - Same as automatic mode
 
 ### **Key Generation Process** (Interactive Mode Fallback)
 1. **User Input** - Name and email (smart defaults from git config)
@@ -107,22 +107,25 @@ chmod +x setup-gpg-git.sh
 ### **Intelligent Key Selection**
 ```bash
 # Priority order for automatic mode:
-1. Keys matching your git email (exact match)
-2. Keys matching your git email (case-insensitive)
-3. All other available keys (fallback)
-4. New key generation (interactive mode only)
+1. Existing configured GPG key (if setup is consistent)
+2. Existing GPG keys matching your git email (exact match)
+3. Keybase keys matching your git email (case-insensitive)
+4. All other available keys (fallback)
+5. New key generation (interactive mode only)
 ```
 
 ### **Comprehensive Error Handling**
-- **Keybase Issues**: Retries with exponential backoff
+- **Missing Keybase**: Gracefully falls back to existing GPG keys
+- **Configuration Issues**: Detects and fixes inconsistent setups
 - **Import Failures**: Automatically tries next best key
 - **Network Problems**: Graceful degradation with helpful messages
 - **Partial Configurations**: Atomic rollback to previous state
 
 ### **Advanced Validation**
+- **Configuration Consistency**: Checks GPG setup completeness and accuracy
 - **Fingerprint Formats**: Supports 40-char and 16-char formats
-- **Key Accessibility**: Verifies Keybase login status
-- **Existing Keys**: Smart detection and reuse
+- **Key Accessibility**: Verifies Keybase login status when available
+- **Existing Keys**: Smart detection, validation, and reuse
 - **Git Configuration**: Validates and updates existing settings
 
 ## 🛠️ Configuration Options
@@ -198,10 +201,13 @@ gpg --edit-key YOUR_KEY_ID
 
 ### **Common Issues & Solutions**
 
-#### **Keybase Not Logged In**
+#### **Keybase Not Available/Logged In**
 ```bash
-# Solution:
+# Solution (if you want to use Keybase):
 keybase login
+./setup-gpg-git.sh --auto
+
+# Or just use existing GPG keys:
 ./setup-gpg-git.sh --auto
 ```
 
@@ -221,9 +227,10 @@ chmod 600 ~/.gnupg/*
 
 #### **Key Import Failures**
 The script automatically handles this with fallback logic:
-1. Tries all available Keybase keys
-2. Offers to generate new key (interactive mode)
-3. Provides clear error messages and next steps
+1. Uses existing properly configured GPG keys
+2. Tries all available Keybase keys (if available)
+3. Offers to generate new key (interactive mode)
+4. Provides clear error messages and next steps
 
 ### **Manual Recovery**
 ```bash
@@ -305,8 +312,6 @@ The ShellCheck workflow saves detailed analysis results as artifacts:
 ### **Badge Status**
 - [![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/shellcheck.yml) - Code quality and linting
 - [![CI](https://github.com/mherod/gpg-setup/workflows/CI/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/ci.yml) - Full test suite with security scanning
-- [![Latest Release](https://img.shields.io/github/v/release/mherod/gpg-setup?include_prereleases&label=latest)](https://github.com/mherod/gpg-setup/releases) - Current version
-- [![License](https://img.shields.io/github/license/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/blob/main/LICENSE) - Open source license
 - [![Commits](https://img.shields.io/github/commit-activity/m/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/commits/main) - Development activity
 
 ## 🤝 Contributing
@@ -353,10 +358,6 @@ bash -n setup-gpg-git.sh
 - Follow existing code style and patterns
 - Add comprehensive error handling
 - Update documentation for new features
-
-## 📄 License
-
-This project is open source and available under standard licensing terms.
 
 ## 🙏 Acknowledgments
 

@@ -186,24 +186,27 @@ OPTIONS:
     --help, -h   Show this help message
 
 DESCRIPTION:
-    This script configures GPG signing for git commits using keybase keys.
+    This script configures GPG signing for git commits. It works with existing
+    GPG keys, keybase keys, or can generate new keys as needed.
     It will install required tools, configure GPG agent, and set up git
     to automatically sign commits.
     
     In automatic mode (--auto), the script will:
-    • Auto-detect and configure git user name/email from keybase
-    • Automatically select the best matching PGP key
+    • Check existing GPG configuration and use if consistent
+    • Auto-detect and use existing GPG keys that match your git email
+    • Fall back to keybase keys if available
     • Configure everything without requiring user input
     
-    In interactive mode, if keybase import fails, the script will offer to:
-    • Generate a new GPG key with your git credentials
+    In interactive mode, the script will:
+    • Check and offer to use existing GPG configuration
+    • Try keybase import if available
+    • Offer to generate a new GPG key if needed
     • Guide you through the key generation process
-    • Automatically configure the new key for git signing
 
 REQUIREMENTS:
     - Homebrew (https://brew.sh/)
-    - Keybase (https://keybase.io/)
     - Git
+    - Keybase (https://keybase.io/) - optional, for importing existing keys
 EOF
 }
 
@@ -216,17 +219,19 @@ check_prerequisites() {
         exit 1
     fi
     
-    if ! command_exists keybase; then
-        log_error "Keybase is required but not installed. Install from https://keybase.io/"
-        exit 1
-    fi
-    
     if ! command_exists git; then
         log_error "Git is required but not installed."
         exit 1
     fi
     
-    log_success "All prerequisites found"
+    # Keybase is optional - log info if not available
+    if ! command_exists keybase; then
+        log_warning "Keybase not found - will work with existing GPG keys only"
+    else
+        log_info "Keybase found"
+    fi
+    
+    log_success "Required tools found"
 }
 
 # Setup git user configuration automatically
@@ -425,8 +430,135 @@ EOF
     fi
 }
 
-# Find best matching keys automatically (returns prioritized list)
+# Check existing GPG configuration consistency
+check_existing_config() {
+    log_info "Checking existing GPG configuration..."
+    
+    local current_signing_key current_email issues=()
+    current_signing_key=$(git config --global user.signingkey 2>/dev/null)
+    current_email=$(git config --global user.email 2>/dev/null)
+    
+    # Check if we have any secret keys
+    local secret_keys
+    secret_keys=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5}' | head -5)
+    
+    if [[ -z "$secret_keys" ]]; then
+        log_warning "No GPG secret keys found"
+        issues+=("no_secret_keys")
+    else
+        log_info "Found existing GPG secret keys"
+        
+        # If no signing key is configured, suggest using an existing one
+        if [[ -z "$current_signing_key" ]]; then
+            log_warning "No git signing key configured"
+            issues+=("no_signing_key")
+        else
+            # Check if the configured signing key exists
+            if ! gpg --list-secret-keys "$current_signing_key" >/dev/null 2>&1; then
+                log_warning "Configured signing key '$current_signing_key' not found in GPG keyring"
+                issues+=("missing_signing_key")
+            else
+                log_info "Configured signing key '$current_signing_key' found"
+                
+                # Check if the key matches the current email
+                if [[ -n "$current_email" ]]; then
+                    local key_info uids
+                    key_info=$(gpg --list-keys --with-colons "$current_signing_key" 2>/dev/null)
+                    uids=$(echo "$key_info" | awk -F: '/^uid:/ {print $10}' | sed 's/\\x3a/:/g')
+                    
+                    if ! echo "$uids" | grep -i "$current_email" >/dev/null 2>&1; then
+                        log_warning "Signing key does not contain git email '$current_email'"
+                        issues+=("email_mismatch")
+                    else
+                        log_success "Signing key matches git email"
+                    fi
+                fi
+            fi
+        fi
+    fi
+    
+    # Check GPG agent configuration
+    if [[ ! -f ~/.gnupg/gpg-agent.conf ]]; then
+        log_warning "GPG agent not configured"
+        issues+=("no_gpg_agent_config")
+    fi
+    
+    # Check git commit signing setting
+    local commit_sign
+    commit_sign=$(git config --global commit.gpgsign 2>/dev/null)
+    if [[ "$commit_sign" != "true" ]]; then
+        log_warning "Git commit signing not enabled"
+        issues+=("commit_signing_disabled")
+    fi
+    
+    # Return 0 if no issues, 1 if issues found
+    if [[ ${#issues[@]} -eq 0 ]]; then
+        log_success "GPG configuration is consistent and complete"
+        return 0
+    else
+        log_info "Found ${#issues[@]} configuration issues: ${issues[*]}"
+        return 1
+    fi
+}
+
+# Find best existing GPG key
+find_best_existing_key() {
+    local current_email
+    current_email=$(git config --global user.email 2>/dev/null)
+    
+    log_info "Looking for best existing GPG key..."
+    
+    # Get all secret keys
+    local secret_keys
+    secret_keys=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5}')
+    
+    if [[ -z "$secret_keys" ]]; then
+        log_warning "No GPG secret keys found"
+        return 1
+    fi
+    
+    local matching_keys=() all_keys=()
+    
+    while IFS= read -r key_id; do
+        if [[ -n "$key_id" ]]; then
+            all_keys+=("$key_id")
+            
+            # Check if key matches current email
+            if [[ -n "$current_email" ]]; then
+                local key_info uids
+                key_info=$(gpg --list-keys --with-colons "$key_id" 2>/dev/null)
+                uids=$(echo "$key_info" | awk -F: '/^uid:/ {print $10}' | sed 's/\\x3a/:/g')
+                
+                if echo "$uids" | grep -i "$current_email" >/dev/null 2>&1; then
+                    log_info "Found key matching git email: $key_id"
+                    matching_keys+=("$key_id")
+                fi
+            fi
+        fi
+    done <<< "$secret_keys"
+    
+    # Return best match
+    if [[ ${#matching_keys[@]} -gt 0 ]]; then
+        echo "${matching_keys[0]}"
+        return 0
+    elif [[ ${#all_keys[@]} -gt 0 ]]; then
+        log_info "No email match found, using first available key: ${all_keys[0]}"
+        echo "${all_keys[0]}"
+        return 0
+    else
+        log_error "No suitable GPG keys found"
+        return 1
+    fi
+}
+
+# Find best matching keys automatically from keybase (returns prioritized list)
 find_best_keys() {
+    # Only works if keybase is available
+    if ! command_exists keybase; then
+        log_error "Keybase not available" >&2
+        return 1
+    fi
+    
     local current_email
     current_email=$(git config --global user.email 2>/dev/null)
     
@@ -551,14 +683,20 @@ find_best_keys() {
     return 0
 }
 
-# Try importing keys with fallback logic
+# Try importing keys with fallback logic (keybase mode)
 try_import_best_key() {
-    log_info "Finding and importing best matching key..."
+    # Check if keybase is available
+    if ! command_exists keybase; then
+        log_warning "Keybase not available, checking existing GPG keys..."
+        return 1
+    fi
+    
+    log_info "Finding and importing best matching key from keybase..."
     
     # Get prioritized list of keys
     local candidate_keys
     if ! candidate_keys=$(find_best_keys); then
-        log_error "No candidate keys found"
+        log_error "No candidate keys found in keybase"
         return 1
     fi
     
@@ -722,23 +860,84 @@ EOF
 # Try importing from keybase or generate new key (interactive mode)
 try_import_or_generate_key() {
     if [[ "$AUTO_MODE" == "true" ]]; then
-        # Auto mode: only try keybase import
-        try_import_best_key
-        return $?
+        # Auto mode: try existing keys first, then keybase, no generation
+        log_info "Auto mode: Checking existing GPG configuration..."
+        
+        # Check if current config is consistent
+        if check_existing_config; then
+            local current_key
+            current_key=$(git config --global user.signingkey 2>/dev/null)
+            if [[ -n "$current_key" ]]; then
+                log_success "Using existing configured key: $current_key"
+                echo "$current_key"
+                return 0
+            fi
+        fi
+        
+        # Try to find best existing key
+        if key_id=$(find_best_existing_key 2>/dev/null); then
+            log_success "Using existing GPG key: $key_id"
+            echo "$key_id"
+            return 0
+        fi
+        
+        # Try keybase import as fallback
+        if command_exists keybase && key_id=$(try_import_best_key 2>/dev/null); then
+            echo "$key_id"
+            return 0
+        fi
+        
+        log_error "No suitable GPG key found and auto mode doesn't generate new keys"
+        log_info "Run in interactive mode to generate a new key, or set up keybase"
+        return 1
     fi
     
-    # Interactive mode: try keybase first, then offer to generate
-    log_info "Attempting to import keys from keybase..."
+    # Interactive mode: check existing first, then try keybase, then offer to generate
+    log_info "Checking existing GPG configuration..."
     
-    if key_id=$(try_import_best_key 2>/dev/null); then
-        echo "$key_id"
-        return 0
+    # Check if current config is consistent and complete
+    if check_existing_config; then
+        local current_key
+        current_key=$(git config --global user.signingkey 2>/dev/null)
+        if [[ -n "$current_key" ]]; then
+            echo -e "${GREEN}Your GPG setup appears to be correctly configured.${NC}"
+            echo -e "${YELLOW}Continue with existing setup? (Y/n):${NC}"
+            read -r continue_existing
+            if [[ "$continue_existing" != "n" && "$continue_existing" != "N" ]]; then
+                log_success "Using existing configured key: $current_key"
+                echo "$current_key"
+                return 0
+            fi
+        fi
     fi
     
-    # Keybase import failed, offer to generate new key
-    log_warning "Failed to import any keys from keybase"
+    # Try to use best existing key if available
+    if key_id=$(find_best_existing_key 2>/dev/null); then
+        echo -e "${BLUE}Found existing GPG key: $key_id${NC}"
+        echo -e "${YELLOW}Use this existing key? (Y/n):${NC}"
+        read -r use_existing
+        if [[ "$use_existing" != "n" && "$use_existing" != "N" ]]; then
+            log_success "Using existing GPG key: $key_id"
+            echo "$key_id"
+            return 0
+        fi
+    fi
+    
+    # Try keybase import
+    if command_exists keybase; then
+        log_info "Attempting to import keys from keybase..."
+        if key_id=$(try_import_best_key 2>/dev/null); then
+            echo "$key_id"
+            return 0
+        fi
+        log_warning "Failed to import any keys from keybase"
+    else
+        log_info "Keybase not available, skipping keybase import"
+    fi
+    
+    # Offer to generate new key
     echo ""
-    echo -e "${YELLOW}Would you like to generate a new GPG key instead? (y/N):${NC}"
+    echo -e "${YELLOW}Would you like to generate a new GPG key? (y/N):${NC}"
     read -r generate_confirm
     
     if [[ "$generate_confirm" == "y" || "$generate_confirm" == "Y" ]]; then
@@ -764,6 +963,12 @@ list_keybase_keys() {
     if [[ "$AUTO_MODE" == "true" ]]; then
         log_info "Auto mode: Finding best key automatically..."
         return 0
+    fi
+    
+    # Check if keybase is available
+    if ! command_exists keybase; then
+        log_warning "Keybase not available - skipping keybase key listing"
+        return 1
     fi
     
     log_info "Available Keybase PGP keys:"
@@ -1279,9 +1484,10 @@ main() {
     echo -e "${BLUE}GPG and Git Setup Script${NC}"
     if [[ "$AUTO_MODE" == "true" ]]; then
         echo "Auto mode: This script will automatically configure GPG signing for git commits"
-        echo "Making intelligent decisions without user prompts..."
+        echo "Checking existing configuration, using existing keys, or importing from keybase as needed..."
     else
-        echo "This script will configure GPG signing for git commits using keybase keys"
+        echo "This script will configure GPG signing for git commits"
+        echo "Working with existing GPG keys, keybase keys, or generating new keys as needed"
     fi
     echo ""
     
