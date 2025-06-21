@@ -24,6 +24,7 @@ chmod +x setup-gpg-git.sh
 - ✅ **Automatic Mode** - Zero-config setup with intelligent existing key detection
 - ✅ **Interactive Mode** - Guided setup with manual key selection
 - ✅ **Existing Key Detection** - Uses your current GPG keys if properly configured
+- ✅ **Auto Keybase Install** - Installs keybase automatically in auto mode for additional options
 - ✅ **Smart Fallback** - Keybase import → new key generation if needed
 - ✅ **Multi-Key Support** - Tries multiple keys until one succeeds
 - ✅ **Robust Error Handling** - Comprehensive retry logic and validation
@@ -80,20 +81,22 @@ chmod +x setup-gpg-git.sh
 
 ### **Automatic Mode Workflow**
 1. **Environment Setup** - Detects Homebrew, installs tools, configures GPG agent
-2. **Configuration Check** - Validates existing GPG setup and git configuration
-3. **Smart Key Selection** - Uses existing keys or finds best match from Keybase
-4. **Automated Import** - Tries keys in priority order until one succeeds
-5. **Git Configuration** - Sets up automatic commit signing
-6. **Verification** - Tests the complete setup
+2. **Keybase Installation** - Automatically installs keybase if not present (for additional options)
+3. **Configuration Check** - Validates existing GPG setup and git configuration
+4. **Smart Key Selection** - Uses existing keys or finds best match from Keybase
+5. **Automated Import** - Tries keys in priority order until one succeeds
+6. **Git Configuration** - Sets up automatic commit signing
+7. **Verification** - Tests the complete setup
 
 ### **Interactive Mode Workflow**
 1. **Environment Setup** - Same as automatic mode
-2. **Configuration Check** - Reviews existing setup and offers to use if valid
-3. **Key Discovery** - Shows existing GPG keys and Keybase keys if available
-4. **Smart Recommendations** - Highlights keys matching your git email
-5. **Fallback Options** - Offers to generate new key if needed
-6. **Manual Selection** - User chooses key or approves generation
-7. **Configuration & Testing** - Same as automatic mode
+2. **Keybase Installation** - Offers to install keybase if not present
+3. **Configuration Check** - Reviews existing setup and offers to use if valid
+4. **Key Discovery** - Shows existing GPG keys and Keybase keys if available
+5. **Smart Recommendations** - Highlights keys matching your git email
+6. **Fallback Options** - Offers to generate new key if needed
+7. **Manual Selection** - User chooses key or approves generation
+8. **Configuration & Testing** - Same as automatic mode
 
 ### **Key Generation Process** (Interactive Mode Fallback)
 1. **User Input** - Name and email (smart defaults from git config)

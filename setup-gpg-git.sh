@@ -194,11 +194,13 @@ DESCRIPTION:
     In automatic mode (--auto), the script will:
     • Check existing GPG configuration and use if consistent
     • Auto-detect and use existing GPG keys that match your git email
+    • Install keybase automatically if not present (for additional options)
     • Fall back to keybase keys if available
     • Configure everything without requiring user input
     
     In interactive mode, the script will:
     • Check and offer to use existing GPG configuration
+    • Offer to install keybase if not present
     • Try keybase import if available
     • Offer to generate a new GPG key if needed
     • Guide you through the key generation process
@@ -208,6 +210,48 @@ REQUIREMENTS:
     - Git
     - Keybase (https://keybase.io/) - optional, for importing existing keys
 EOF
+}
+
+# Install keybase if needed
+install_keybase() {
+    if command_exists keybase; then
+        log_info "Keybase already installed"
+        return 0
+    fi
+    
+    if [[ "$AUTO_MODE" == "true" ]]; then
+        log_info "Auto mode: Installing keybase for additional key import options..."
+        run_command brew install --cask keybase
+        if command_exists keybase; then
+            log_success "Keybase installed successfully"
+            return 0
+        else
+            log_warning "Keybase installation failed, continuing without it"
+            return 1
+        fi
+    else
+        # Interactive mode - ask user
+        echo ""
+        echo -e "${BLUE}Keybase not found. Keybase provides additional GPG key import options.${NC}"
+        echo -e "${YELLOW}Would you like to install keybase from homebrew? (y/N):${NC}"
+        read -r install_keybase_confirm
+        
+        if [[ "$install_keybase_confirm" == "y" || "$install_keybase_confirm" == "Y" ]]; then
+            log_info "Installing keybase..."
+            run_command brew install --cask keybase
+            if command_exists keybase; then
+                log_success "Keybase installed successfully"
+                log_info "You may need to run 'keybase login' to access your keys"
+                return 0
+            else
+                log_warning "Keybase installation failed, continuing without it"
+                return 1
+            fi
+        else
+            log_info "Skipping keybase installation"
+            return 1
+        fi
+    fi
 }
 
 # Check prerequisites
@@ -222,13 +266,6 @@ check_prerequisites() {
     if ! command_exists git; then
         log_error "Git is required but not installed."
         exit 1
-    fi
-    
-    # Keybase is optional - log info if not available
-    if ! command_exists keybase; then
-        log_warning "Keybase not found - will work with existing GPG keys only"
-    else
-        log_info "Keybase found"
     fi
     
     log_success "Required tools found"
@@ -1498,6 +1535,7 @@ main() {
     backup_gpg_config
     
     check_prerequisites
+    install_keybase
     setup_git_user_config
     setup_global_gitignore
     install_tools
