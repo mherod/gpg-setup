@@ -1,10 +1,26 @@
 # GPG and Git Setup Script
 
-![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg)
+[![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/shellcheck.yml)
+[![CI](https://github.com/mherod/gpg-setup/workflows/CI/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/mherod/gpg-setup?include_prereleases&label=latest)](https://github.com/mherod/gpg-setup/releases)
+[![License](https://img.shields.io/github/license/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/blob/main/LICENSE)
 
 A comprehensive, production-ready script that automates GPG and Git signing setup on macOS. Supports both Keybase key import and new key generation with intelligent fallback logic.
 
-## 🚀 Features
+## 🚀 Quick Install
+
+```bash
+# Download and run directly
+curl -sSL https://raw.githubusercontent.com/mherod/gpg-setup/main/setup-gpg-git.sh | bash -s -- --auto
+
+# Or clone and run
+git clone https://github.com/mherod/gpg-setup.git
+cd gpg-setup
+chmod +x setup-gpg-git.sh
+./setup-gpg-git.sh --auto
+```
+
+## ✨ Features
 
 ### **Core Functionality**
 - ✅ **Automatic Mode** - Zero-config setup with intelligent key selection
@@ -257,8 +273,11 @@ The project includes comprehensive CI/CD:
 - **Artifact Storage**: Detailed analysis results
 
 ### **Badge Status**
-- ![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg) - Code quality
-- ![CI](https://github.com/mherod/gpg-setup/workflows/CI/badge.svg) - Full test suite
+- [![ShellCheck](https://github.com/mherod/gpg-setup/workflows/ShellCheck/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/shellcheck.yml) - Code quality and linting
+- [![CI](https://github.com/mherod/gpg-setup/workflows/CI/badge.svg)](https://github.com/mherod/gpg-setup/actions/workflows/ci.yml) - Full test suite with security scanning
+- [![Latest Release](https://img.shields.io/github/v/release/mherod/gpg-setup?include_prereleases&label=latest)](https://github.com/mherod/gpg-setup/releases) - Current version
+- [![License](https://img.shields.io/github/license/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/blob/main/LICENSE) - Open source license
+- [![Commits](https://img.shields.io/github/commit-activity/m/mherod/gpg-setup)](https://github.com/mherod/gpg-setup/commits/main) - Development activity
 
 ## 🤝 Contributing
 
