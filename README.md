@@ -44,6 +44,8 @@ chmod +x setup-gpg-git.sh
 - ✅ **Input Validation** - Validates all fingerprints and configurations
 - ✅ **Idempotent** - Safe to run multiple times
 - ✅ **ShellCheck Compliant** - High code quality with automated CI
+- ✅ **Modular Code** - Reusable helper functions eliminate code duplication
+- ✅ **Security Warnings** - Clear alerts for passphrase-free key generation
 
 ## 📋 Requirements
 
@@ -109,9 +111,10 @@ chmod +x setup-gpg-git.sh
 1. **Environment Setup** - Same as automatic mode
 2. **Tool Installation** - Same as automatic mode
 3. **Fresh Key Generation** - Always creates new 4096-bit RSA GPG key
-4. **Git Configuration** - Sets up automatic commit signing with new key
-5. **Platform Integration** - Uploads new key to GitHub and Keybase
-6. **Verification** - Tests the complete setup
+4. **Security Configuration** - Auto mode uses no passphrase (with warning), interactive mode prompts for passphrase
+5. **Git Configuration** - Sets up automatic commit signing with new key
+6. **Platform Integration** - Uploads new key to GitHub and Keybase
+7. **Verification** - Tests the complete setup
 
 ### **Interactive Mode Workflow**
 1. **Environment Setup** - Same as automatic mode
@@ -182,6 +185,10 @@ Expiration:      2 years
 Cipher:          AES256
 Digest:          SHA512
 Compression:     ZLIB
+
+# Security Settings:
+Auto Mode:       No passphrase (with security warning)
+Interactive:     Prompts for passphrase protection
 ```
 
 ## 📁 File Locations
@@ -266,6 +273,25 @@ The script automatically handles this with fallback logic:
 2. Tries all available Keybase keys (if available)
 3. Offers to generate new key (interactive mode)
 4. Provides clear error messages and next steps
+
+#### **New Key Generation Issues**
+If `--new` mode seems to reuse existing keys:
+```bash
+# The script now properly generates unique keys each time
+# Previous issue was fixed in v2.1+ with improved key lookup logic
+./setup-gpg-git.sh --new --auto --dry-run  # Preview first
+./setup-gpg-git.sh --new --auto             # Generate new key
+```
+
+#### **Security Considerations**
+**Auto Mode Key Generation**:
+- Uses no passphrase for automation compatibility
+- Shows clear security warning: "Auto mode: Generating key without passphrase protection for automation. This is less secure!"
+- Recommended for CI/CD environments only
+
+**Interactive Mode Key Generation**:
+- Prompts for passphrase protection (more secure)
+- Recommended for personal development environments
 
 ### **Manual Recovery**
 ```bash
@@ -400,6 +426,8 @@ bash -n setup-gpg-git.sh
 - Follow existing code style and patterns
 - Add comprehensive error handling
 - Update documentation for new features
+- Use reusable helper functions to eliminate code duplication
+- Ensure proper output capture and stderr redirection
 
 ## 🙏 Acknowledgments
 

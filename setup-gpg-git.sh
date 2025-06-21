@@ -59,6 +59,48 @@ init_paths() {
     fi
 }
 
+# Get the newest GPG key for a given email address
+get_newest_key_for_email() {
+    local email="$1"
+    
+    if [[ -z "$email" ]]; then
+        log_error "No email provided for key lookup" >&2
+        return 1
+    fi
+    
+    # Get the most recent fingerprint for this email (last in list is newest)
+    local fingerprint
+    fingerprint=$(gpg --list-secret-keys --with-colons --with-fingerprint "$email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | tail -1)
+    
+    if [[ -n "$fingerprint" ]]; then
+        echo "$fingerprint"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Convert fingerprint to short key ID
+fingerprint_to_key_id() {
+    local fingerprint="$1"
+    
+    if [[ -z "$fingerprint" ]]; then
+        log_error "No fingerprint provided for key ID conversion" >&2
+        return 1
+    fi
+    
+    local key_id
+    key_id=$(gpg --list-keys --with-colons "$fingerprint" 2>/dev/null | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+    
+    if [[ -n "$key_id" ]]; then
+        echo "$key_id"
+        return 0
+    else
+        log_error "Could not determine key ID for fingerprint: $fingerprint" >&2
+        return 1
+    fi
+}
+
 # Validate PGP fingerprint format (robust version)
 validate_fingerprint() {
     local fingerprint="$1"
@@ -1083,14 +1125,14 @@ Subkey-Length: $key_length
 Name-Real: $user_name
 Name-Email: $user_email
 Expire-Date: $expire_date
-Passphrase: 
+%no-protection
 %commit
 %echo GPG key generation complete
 EOF
     
     # Generate the key
     log_info "Generating GPG key (this may take a while)..."
-    echo -e "${YELLOW}Note: You'll be prompted to set a passphrase for your new key.${NC}"
+    echo -e "${YELLOW}Note: Key will be generated without passphrase protection for automation.${NC}"
     
     if gpg --batch --generate-key "$batch_file" 2>/dev/null; then
         log_success "GPG key generated successfully!"
@@ -1098,31 +1140,33 @@ EOF
         # Clean up batch file
         rm -f "$batch_file"
         
-        # Get the new key ID
+        # Get the newest key ID for this email
         local new_key_fingerprint new_key_id
-        new_key_fingerprint=$(gpg --list-secret-keys --with-colons "$user_email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | head -1)
-        
-        if [[ -n "$new_key_fingerprint" ]]; then
-            new_key_id=$(gpg --list-keys --with-colons "$new_key_fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
-            log_success "New key ID: $new_key_id"
-            log_info "Fingerprint: $new_key_fingerprint"
-            
-            # Update git config if needed
-            if [[ -z "$(git config --global user.name 2>/dev/null)" ]]; then
-                git config --global user.name "$user_name"
-                log_info "Set git user.name: $user_name"
+        if new_key_fingerprint=$(get_newest_key_for_email "$user_email"); then
+            if new_key_id=$(fingerprint_to_key_id "$new_key_fingerprint"); then
+                log_success "New key ID: $new_key_id"
+                log_info "Fingerprint: $new_key_fingerprint"
+            else
+                log_error "Could not determine key ID for generated key"
+                return 1
             fi
-            if [[ -z "$(git config --global user.email 2>/dev/null)" ]]; then
-                git config --global user.email "$user_email"
-                log_info "Set git user.email: $user_email"
-            fi
-            
-            echo "$new_key_id"
-            return 0
         else
-            log_error "Could not determine new key ID"
+            log_error "Could not find the newly generated key"
             return 1
         fi
+        
+        # Update git config if needed
+        if [[ -z "$(git config --global user.name 2>/dev/null)" ]]; then
+            git config --global user.name "$user_name"
+            log_info "Set git user.name: $user_name"
+        fi
+        if [[ -z "$(git config --global user.email 2>/dev/null)" ]]; then
+            git config --global user.email "$user_email"
+            log_info "Set git user.email: $user_email"
+        fi
+        
+        echo "$new_key_id"
+        return 0
     else
         log_error "Failed to generate GPG key"
         rm -f "$batch_file"
@@ -1233,7 +1277,7 @@ try_import_or_generate_key() {
 
 # Generate new GPG key mode - always creates a fresh key
 generate_new_key_mode() {
-    log_info "New key mode: Generating fresh GPG key..."
+    log_info "New key mode: Generating fresh GPG key..." >&2
     
     # Get git configuration for key generation
     local user_name user_email
@@ -1243,13 +1287,13 @@ generate_new_key_mode() {
     # Ensure we have name and email
     if [[ -z "$user_name" ]]; then
         if [[ "$AUTO_MODE" == "true" ]]; then
-            log_error "Git user.name not configured. Set with: git config --global user.name \"Your Name\""
+            log_error "Git user.name not configured. Set with: git config --global user.name \"Your Name\"" >&2
             return 1
         else
-            echo -e "${YELLOW}Enter your full name:${NC}"
+            echo -e "${YELLOW}Enter your full name:${NC}" >&2
             read -r user_name
             if [[ -z "$user_name" ]]; then
-                log_error "Name is required for GPG key generation"
+                log_error "Name is required for GPG key generation" >&2
                 return 1
             fi
             # Set it for future use
@@ -1259,13 +1303,13 @@ generate_new_key_mode() {
     
     if [[ -z "$user_email" ]]; then
         if [[ "$AUTO_MODE" == "true" ]]; then
-            log_error "Git user.email not configured. Set with: git config --global user.email \"you@example.com\""
+            log_error "Git user.email not configured. Set with: git config --global user.email \"you@example.com\"" >&2
             return 1
         else
-            echo -e "${YELLOW}Enter your email address:${NC}"
+            echo -e "${YELLOW}Enter your email address:${NC}" >&2
             read -r user_email
             if [[ -z "$user_email" ]]; then
-                log_error "Email is required for GPG key generation"
+                log_error "Email is required for GPG key generation" >&2
                 return 1
             fi
             # Set it for future use
@@ -1273,22 +1317,25 @@ generate_new_key_mode() {
         fi
     fi
     
-    log_info "Generating new GPG key for: $user_name <$user_email>"
+    log_info "Generating new GPG key for: $user_name <$user_email>" >&2
     
     if [[ "$AUTO_MODE" != "true" ]]; then
-        echo ""
-        echo -e "${BLUE}This will create a new 4096-bit RSA GPG key with 2-year expiration.${NC}"
-        echo -e "${YELLOW}Continue with key generation? (Y/n):${NC}"
+        echo "" >&2
+        echo -e "${BLUE}This will create a new 4096-bit RSA GPG key with 2-year expiration.${NC}" >&2
+        echo -e "${YELLOW}Continue with key generation? (Y/n):${NC}" >&2
         read -r confirm_generation
         if [[ "$confirm_generation" == "n" || "$confirm_generation" == "N" ]]; then
-            log_info "Key generation cancelled"
+            log_info "Key generation cancelled" >&2
             return 1
         fi
     fi
     
     # Create batch file for unattended generation
     local batch_file="/tmp/gpg_gen_batch_new_$$"
-    cat > "$batch_file" << EOF
+    
+    if [[ "$AUTO_MODE" == "true" ]]; then
+        log_warning "Auto mode: Generating key without passphrase protection for automation. This is less secure!" >&2
+        cat > "$batch_file" << EOF
 %echo Generating new GPG key...
 Key-Type: RSA
 Key-Length: 4096
@@ -1297,48 +1344,68 @@ Subkey-Length: 4096
 Name-Real: $user_name
 Name-Email: $user_email
 Expire-Date: 2y
-Passphrase: 
+%no-protection
 %commit
 %echo GPG key generation complete
 EOF
+    else
+        # Interactive mode - use passphrase
+        cat > "$batch_file" << EOF
+%echo Generating new GPG key...
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: $user_name
+Name-Email: $user_email
+Expire-Date: 2y
+%commit
+%echo GPG key generation complete
+EOF
+    fi
     
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY RUN] Would generate new GPG key with batch file"
-        log_info "[DRY RUN] Key details: $user_name <$user_email>, RSA 4096-bit, 2y expiration"
+        log_info "[DRY RUN] Would generate new GPG key with batch file" >&2
+        log_info "[DRY RUN] Key details: $user_name <$user_email>, RSA 4096-bit, 2y expiration" >&2
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            log_info "[DRY RUN] Would use no passphrase protection (auto mode)" >&2
+        else
+            log_info "[DRY RUN] Would prompt for passphrase (interactive mode)" >&2
+        fi
         rm -f "$batch_file"
         echo "DRYRUN1234567890ABCD"
         return 0
     fi
     
     # Generate the key
-    log_info "Generating GPG key (this may take a while)..."
-    if [[ "$AUTO_MODE" != "true" ]]; then
-        echo -e "${YELLOW}Note: You'll be prompted to set a passphrase for your new key.${NC}"
-    fi
+    log_info "Generating GPG key (this may take a while)..." >&2
     
     if gpg --batch --generate-key "$batch_file" 2>/dev/null; then
-        log_success "New GPG key generated successfully!"
+        log_success "New GPG key generated successfully!" >&2
         
         # Clean up batch file
         rm -f "$batch_file"
         
-        # Get the new key ID
+        # Get the newest key ID for this email
+        # Sleep briefly to ensure timestamp difference
+        sleep 1
         local new_key_fingerprint new_key_id
-        new_key_fingerprint=$(gpg --list-secret-keys --with-colons "$user_email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | head -1)
-        
-        if [[ -n "$new_key_fingerprint" ]]; then
-            new_key_id=$(gpg --list-keys --with-colons "$new_key_fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
-            log_success "New key ID: $new_key_id"
-            log_info "Fingerprint: $new_key_fingerprint"
-            
-            echo "$new_key_id"
-            return 0
+        if new_key_fingerprint=$(get_newest_key_for_email "$user_email"); then
+            if new_key_id=$(fingerprint_to_key_id "$new_key_fingerprint"); then
+                log_success "New key ID: $new_key_id" >&2
+                log_info "Fingerprint: $new_key_fingerprint" >&2
+                echo "$new_key_id"
+                return 0
+            else
+                log_error "Could not determine key ID for generated key" >&2
+                return 1
+            fi
         else
-            log_error "Could not determine new key ID"
+            log_error "Could not find the newly generated key" >&2
             return 1
         fi
     else
-        log_error "Failed to generate GPG key"
+        log_error "Failed to generate GPG key" >&2
         rm -f "$batch_file"
         return 1
     fi
@@ -1655,7 +1722,7 @@ import_keybase_key() {
     local max_retries=3
     
     while [[ $retry_count -lt $max_retries ]]; do
-        short_key_id=$(gpg --list-keys --with-colons "$fingerprint" 2>/dev/null | awk -F: '/^pub:/ {print $5}' | tail -c 17)
+        short_key_id=$(fingerprint_to_key_id "$fingerprint")
         
         if [[ -n "$short_key_id" ]]; then
             log_info "Short key ID: $short_key_id"
@@ -1916,16 +1983,16 @@ main() {
     configure_gpg_agent
     
     echo ""
-    if [[ "$NEW_KEY_MODE" == "true" ]]; then
-        # New key mode: always generate a fresh key
-        log_info "New key mode: Generating fresh GPG key..."
-        if ! key_id=$(generate_new_key_mode); then
-            log_error "Failed to generate new GPG key"
-            exit 1
-        fi
-        log_success "Generated new GPG key: $key_id"
-    elif [[ "$DRY_RUN" != "true" ]]; then
-        if [[ "$AUTO_MODE" == "true" ]]; then
+    if [[ "$DRY_RUN" != "true" ]]; then
+        if [[ "$NEW_KEY_MODE" == "true" ]]; then
+            # New key mode: always generate a fresh key
+            log_info "New key mode: Generating fresh GPG key..."
+            if ! key_id=$(generate_new_key_mode); then
+                log_error "Failed to generate new GPG key"
+                exit 1
+            fi
+            log_success "Generated new GPG key: $key_id"
+        elif [[ "$AUTO_MODE" == "true" ]]; then
             # Automatic key selection with fallback
             log_info "Auto mode: Finding and importing best key automatically..."
             if ! key_id=$(try_import_best_key); then
