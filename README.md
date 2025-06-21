@@ -24,7 +24,9 @@ chmod +x setup-gpg-git.sh
 - ✅ **Automatic Mode** - Zero-config setup with intelligent existing key detection
 - ✅ **Interactive Mode** - Guided setup with manual key selection
 - ✅ **Existing Key Detection** - Uses your current GPG keys if properly configured
-- ✅ **Auto Keybase Install** - Installs keybase automatically in auto mode for additional options
+- ✅ **Auto Tool Install** - Installs keybase and GitHub CLI automatically in auto mode
+- ✅ **GitHub Integration** - Automatically uploads GPG keys for commit verification
+- ✅ **Keybase Integration** - Uploads generated keys to Keybase for PGP operations
 - ✅ **Smart Fallback** - Keybase import → new key generation if needed
 - ✅ **Multi-Key Support** - Tries multiple keys until one succeeds
 - ✅ **Robust Error Handling** - Comprehensive retry logic and validation
@@ -48,9 +50,10 @@ chmod +x setup-gpg-git.sh
 |------|---------|-------------|
 | **Homebrew** | Package manager | [brew.sh](https://brew.sh/) |
 | **Git** | Version control | Usually pre-installed |
-| **Keybase** *(optional)* | PGP key import | [keybase.io](https://keybase.io/) |
+| **Keybase** *(optional)* | PGP key import/upload | [keybase.io](https://keybase.io/) |
+| **GitHub CLI** *(optional)* | GPG key upload to GitHub | Auto-installed via homebrew |
 
-> **Note**: Keybase is completely optional - the script works with existing GPG keys and can generate new ones if needed.
+> **Note**: Both Keybase and GitHub CLI are optional - the script works with existing GPG keys and can generate new ones. These tools enable automatic key upload to their respective platforms.
 
 ## 🎯 Quick Start
 
@@ -81,22 +84,24 @@ chmod +x setup-gpg-git.sh
 
 ### **Automatic Mode Workflow**
 1. **Environment Setup** - Detects Homebrew, installs tools, configures GPG agent
-2. **Keybase Installation** - Automatically installs keybase if not present (for additional options)
+2. **Tool Installation** - Automatically installs keybase and GitHub CLI if not present
 3. **Configuration Check** - Validates existing GPG setup and git configuration
 4. **Smart Key Selection** - Uses existing keys or finds best match from Keybase
 5. **Automated Import** - Tries keys in priority order until one succeeds
 6. **Git Configuration** - Sets up automatic commit signing
-7. **Verification** - Tests the complete setup
+7. **Platform Integration** - Uploads keys to GitHub and Keybase for full integration
+8. **Verification** - Tests the complete setup
 
 ### **Interactive Mode Workflow**
 1. **Environment Setup** - Same as automatic mode
-2. **Keybase Installation** - Offers to install keybase if not present
+2. **Tool Installation** - Offers to install keybase and GitHub CLI if not present
 3. **Configuration Check** - Reviews existing setup and offers to use if valid
 4. **Key Discovery** - Shows existing GPG keys and Keybase keys if available
 5. **Smart Recommendations** - Highlights keys matching your git email
 6. **Fallback Options** - Offers to generate new key if needed
 7. **Manual Selection** - User chooses key or approves generation
-8. **Configuration & Testing** - Same as automatic mode
+8. **Platform Integration** - Uploads keys to GitHub and Keybase
+9. **Configuration & Testing** - Same as automatic mode
 
 ### **Key Generation Process** (Interactive Mode Fallback)
 1. **User Input** - Name and email (smart defaults from git config)
@@ -266,12 +271,19 @@ git log --show-signature -1
 ```
 
 ### **Integration with GitHub**
+If the script didn't automatically upload your key:
 1. **Export your public key**:
    ```bash
    gpg --armor --export YOUR_EMAIL@example.com
    ```
 2. **Add to GitHub**: Settings → SSH and GPG keys → New GPG key
 3. **Verify**: Your commits will show "Verified" badges
+
+Or use the GitHub CLI:
+```bash
+gh auth login
+gh gpg-key add <(gpg --armor --export YOUR_EMAIL@example.com)
+```
 
 ## 📈 Status & Monitoring
 

@@ -195,14 +195,18 @@ DESCRIPTION:
     • Check existing GPG configuration and use if consistent
     • Auto-detect and use existing GPG keys that match your git email
     • Install keybase automatically if not present (for additional options)
+    • Install GitHub CLI and upload GPG key for commit verification
+    • Upload generated keys to Keybase and GitHub for full integration
     • Fall back to keybase keys if available
     • Configure everything without requiring user input
     
     In interactive mode, the script will:
     • Check and offer to use existing GPG configuration
     • Offer to install keybase if not present
+    • Offer to install GitHub CLI for automatic key upload
     • Try keybase import if available
     • Offer to generate a new GPG key if needed
+    • Upload new keys to Keybase and GitHub
     • Guide you through the key generation process
 
 REQUIREMENTS:
@@ -251,6 +255,224 @@ install_keybase() {
             log_info "Skipping keybase installation"
             return 1
         fi
+    fi
+}
+
+# Install GitHub CLI if needed
+install_gh_cli() {
+    if command_exists gh; then
+        log_info "GitHub CLI already installed"
+        return 0
+    fi
+    
+    if [[ "$AUTO_MODE" == "true" ]]; then
+        log_info "Auto mode: Installing GitHub CLI for GPG key upload..."
+        run_command brew install gh
+        if command_exists gh; then
+            log_success "GitHub CLI installed successfully"
+            return 0
+        else
+            log_warning "GitHub CLI installation failed, skipping GitHub integration"
+            return 1
+        fi
+    else
+        # Interactive mode - ask user
+        echo ""
+        echo -e "${BLUE}GitHub CLI not found. This enables automatic GPG key upload to GitHub.${NC}"
+        echo -e "${YELLOW}Would you like to install GitHub CLI from homebrew? (y/N):${NC}"
+        read -r install_gh_confirm
+        
+        if [[ "$install_gh_confirm" == "y" || "$install_gh_confirm" == "Y" ]]; then
+            log_info "Installing GitHub CLI..."
+            run_command brew install gh
+            if command_exists gh; then
+                log_success "GitHub CLI installed successfully"
+                return 0
+            else
+                log_warning "GitHub CLI installation failed, skipping GitHub integration"
+                return 1
+            fi
+        else
+            log_info "Skipping GitHub CLI installation"
+            return 1
+        fi
+    fi
+}
+
+# Check if user is authenticated with GitHub
+check_gh_auth() {
+    if ! command_exists gh; then
+        return 1
+    fi
+    
+    if gh auth status >/dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Upload GPG key to GitHub
+upload_gpg_key_to_github() {
+    local key_id="$1"
+    
+    if [[ -z "$key_id" ]]; then
+        log_error "No key ID provided for GitHub upload"
+        return 1
+    fi
+    
+    # Check if GitHub CLI is available
+    if ! command_exists gh; then
+        log_warning "GitHub CLI not available, skipping GitHub key upload"
+        return 1
+    fi
+    
+    # Check authentication
+    if ! check_gh_auth; then
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            log_warning "Not authenticated with GitHub, skipping key upload"
+            log_info "Run 'gh auth login' to enable automatic GitHub key upload"
+            return 1
+        else
+            echo ""
+            echo -e "${BLUE}GitHub authentication required for key upload.${NC}"
+            echo -e "${YELLOW}Would you like to authenticate with GitHub now? (y/N):${NC}"
+            read -r auth_confirm
+            
+            if [[ "$auth_confirm" == "y" || "$auth_confirm" == "Y" ]]; then
+                log_info "Starting GitHub authentication..."
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    log_info "[DRY RUN] Would run: gh auth login"
+                    return 0
+                else
+                    gh auth login
+                    if ! check_gh_auth; then
+                        log_warning "GitHub authentication failed, skipping key upload"
+                        return 1
+                    fi
+                fi
+            else
+                log_info "Skipping GitHub authentication and key upload"
+                return 1
+            fi
+        fi
+    fi
+    
+    log_info "Uploading GPG key to GitHub..."
+    
+    # Get the public key
+    local public_key_file="/tmp/gpg_key_${key_id}.asc"
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would export public key: gpg --armor --export $key_id"
+        log_info "[DRY RUN] Would upload to GitHub: gh gpg-key add"
+        log_success "GPG key would be uploaded to GitHub"
+        return 0
+    fi
+    
+    # Export the public key
+    if ! gpg --armor --export "$key_id" > "$public_key_file" 2>/dev/null; then
+        log_error "Failed to export public key for $key_id"
+        rm -f "$public_key_file"
+        return 1
+    fi
+    
+    # Check if key already exists on GitHub
+    local existing_keys
+    existing_keys=$(gh gpg-key list 2>/dev/null | grep -o '[A-F0-9]\{16\}' || echo "")
+    
+    if echo "$existing_keys" | grep -q "$key_id"; then
+        log_info "GPG key $key_id already exists on GitHub"
+        rm -f "$public_key_file"
+        return 0
+    fi
+    
+    # Upload the key
+    if gh gpg-key add "$public_key_file" >/dev/null 2>&1; then
+        log_success "GPG key uploaded to GitHub successfully"
+        log_info "Your commits will now show as 'Verified' on GitHub"
+        rm -f "$public_key_file"
+        return 0
+    else
+        log_warning "Failed to upload GPG key to GitHub"
+        log_info "You can manually add it at: https://github.com/settings/gpg/new"
+        rm -f "$public_key_file"
+        return 1
+    fi
+}
+
+# Upload GPG key to Keybase
+upload_gpg_key_to_keybase() {
+    local key_id="$1"
+    
+    if [[ -z "$key_id" ]]; then
+        log_error "No key ID provided for Keybase upload"
+        return 1
+    fi
+    
+    # Check if keybase is available
+    if ! command_exists keybase; then
+        log_warning "Keybase not available, skipping Keybase key upload"
+        return 1
+    fi
+    
+    # Check if keybase is logged in
+    if ! keybase status >/dev/null 2>&1; then
+        if [[ "$AUTO_MODE" == "true" ]]; then
+            log_warning "Not logged into Keybase, skipping key upload"
+            log_info "Run 'keybase login' to enable automatic Keybase key upload"
+            return 1
+        else
+            echo ""
+            echo -e "${BLUE}Keybase login required for key upload.${NC}"
+            echo -e "${YELLOW}Would you like to login to Keybase now? (y/N):${NC}"
+            read -r keybase_login_confirm
+            
+            if [[ "$keybase_login_confirm" == "y" || "$keybase_login_confirm" == "Y" ]]; then
+                log_info "Starting Keybase login..."
+                if [[ "$DRY_RUN" == "true" ]]; then
+                    log_info "[DRY RUN] Would run: keybase login"
+                    return 0
+                else
+                    keybase login
+                    if ! keybase status >/dev/null 2>&1; then
+                        log_warning "Keybase login failed, skipping key upload"
+                        return 1
+                    fi
+                fi
+            else
+                log_info "Skipping Keybase login and key upload"
+                return 1
+            fi
+        fi
+    fi
+    
+    log_info "Uploading GPG key to Keybase..."
+    
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would select GPG key for Keybase: keybase pgp select $key_id"
+        log_success "GPG key would be uploaded to Keybase"
+        return 0
+    fi
+    
+    # Check if key already exists in keybase
+    local existing_keybase_keys
+    existing_keybase_keys=$(keybase pgp list 2>/dev/null | grep -o '[A-F0-9]\{16\}' || echo "")
+    
+    if echo "$existing_keybase_keys" | grep -q "$key_id"; then
+        log_info "GPG key $key_id already exists in Keybase"
+        return 0
+    fi
+    
+    # Upload the key to keybase using pgp select
+    if keybase pgp select "$key_id" >/dev/null 2>&1; then
+        log_success "GPG key uploaded to Keybase successfully"
+        log_info "Your key is now available for Keybase PGP operations"
+        return 0
+    else
+        log_warning "Failed to upload GPG key to Keybase"
+        log_info "You can manually add it with: keybase pgp select $key_id"
+        return 1
     fi
 }
 
@@ -1482,6 +1704,24 @@ show_next_steps() {
         else
             echo "• Signing key: ✗ not configured"
         fi
+        
+        # Check GitHub integration
+        if command_exists gh && check_gh_auth; then
+            echo "• GitHub integration: ✓ authenticated"
+        elif command_exists gh; then
+            echo "• GitHub integration: ⚠ not authenticated"
+        else
+            echo "• GitHub integration: ✗ GitHub CLI not installed"
+        fi
+        
+        # Check Keybase integration
+        if command_exists keybase && keybase status >/dev/null 2>&1; then
+            echo "• Keybase integration: ✓ logged in"
+        elif command_exists keybase; then
+            echo "• Keybase integration: ⚠ not logged in"
+        else
+            echo "• Keybase integration: ✗ not installed"
+        fi
         echo ""
     else
         echo -e "\n${BLUE}Next steps:${NC}"
@@ -1498,7 +1738,9 @@ show_next_steps() {
         echo ""
         echo "Note: If you generated a new key, you may want to:"
         echo "• Upload it to a keyserver: gpg --send-keys <your-key-id>"
-        echo "• Add it to your GitHub account for verification"
+        if ! (command_exists gh && check_gh_auth); then
+            echo "• Add it to your GitHub account for verification"
+        fi
         echo ""
     fi
     
@@ -1536,6 +1778,7 @@ main() {
     
     check_prerequisites
     install_keybase
+    install_gh_cli
     setup_git_user_config
     setup_global_gitignore
     install_tools
@@ -1573,6 +1816,12 @@ main() {
     
     # Configure git
     configure_git_signing "$key_id"
+    
+    # Upload key to GitHub
+    upload_gpg_key_to_github "$key_id"
+    
+    # Upload key to Keybase
+    upload_gpg_key_to_keybase "$key_id"
     
     # Verify everything
     if [[ "$DRY_RUN" != "true" ]]; then
