@@ -1,0 +1,75 @@
+name: ShellCheck
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - '*.sh'
+      - '**/*.sh'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - '*.sh'
+      - '**/*.sh'
+
+jobs:
+  shellcheck:
+    name: ShellCheck Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run ShellCheck Action
+      uses: ludeeus/action-shellcheck@master
+      with:
+        scandir: '.'
+        severity: error
+        ignore_paths: '.git'
+        
+    - name: Install ShellCheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+        
+    - name: Run detailed ShellCheck
+      run: |
+        echo "Running detailed ShellCheck analysis..."
+        
+        # Create results directory
+        mkdir -p shellcheck-results
+        
+        # Run shellcheck on all shell scripts with different output formats
+        for script in $(find . -name "*.sh" -type f); do
+          echo "Analyzing $script..."
+          
+          # GCC format for easy parsing
+          shellcheck -S style -f gcc "$script" > "shellcheck-results/$(basename "$script").gcc" || true
+          
+          # Human readable format
+          shellcheck -S style -f tty "$script" > "shellcheck-results/$(basename "$script").txt" || true
+          
+          # JSON format for potential processing
+          shellcheck -S style -f json "$script" > "shellcheck-results/$(basename "$script").json" || true
+        done
+        
+        # Summary report
+        echo "ShellCheck Summary:"
+        echo "=================="
+        for script in $(find . -name "*.sh" -type f); do
+          echo -n "$(basename "$script"): "
+          if shellcheck -S style "$script" >/dev/null 2>&1; then
+            echo "✅ PASS"
+          else
+            echo "❌ ISSUES FOUND"
+          fi
+        done
+        
+    - name: Upload ShellCheck results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: shellcheck-results
+        path: shellcheck-results/
+        retention-days: 30

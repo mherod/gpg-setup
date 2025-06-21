@@ -39,3 +39,4 @@ pids
 # Test files
 test_*
 *.test
+/.claude

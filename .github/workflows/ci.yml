@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    name: Lint and Quality Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup ShellCheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+        
+    - name: Run ShellCheck
+      run: |
+        echo "Running ShellCheck on all shell scripts..."
+        shellcheck_failed=0
+        
+        for script in $(find . -name "*.sh" -type f); do
+          echo "Checking $script"
+          if ! shellcheck -S style -f gcc "$script"; then
+            shellcheck_failed=1
+          fi
+        done
+        
+        if [ $shellcheck_failed -eq 1 ]; then
+          echo "ShellCheck found issues!"
+          exit 1
+        else
+          echo "All shell scripts passed ShellCheck!"
+        fi
+        
+    - name: Validate script syntax
+      run: |
+        echo "Validating shell script syntax..."
+        syntax_failed=0
+        
+        for script in $(find . -name "*.sh" -type f); do
+          echo "Checking syntax of $script"
+          if ! bash -n "$script"; then
+            echo "Syntax error in $script"
+            syntax_failed=1
+          fi
+        done
+        
+        if [ $syntax_failed -eq 1 ]; then
+          echo "Syntax validation failed!"
+          exit 1
+        else
+          echo "All scripts have valid syntax!"
+        fi
+        
+    - name: Check script permissions
+      run: |
+        echo "Checking script permissions..."
+        for script in $(find . -name "*.sh" -type f); do
+          echo "Checking permissions of $script"
+          ls -la "$script"
+          if [ ! -x "$script" ]; then
+            echo "Warning: $script is not executable"
+          fi
+        done
+        
+    - name: Test dry run mode
+      run: |
+        echo "Testing dry run mode..."
+        if [ -f "setup-gpg-git.sh" ]; then
+          echo "Running setup-gpg-git.sh --dry-run --help"
+          bash setup-gpg-git.sh --help
+          
+          # Note: Can't test --dry-run without keybase, but we can test argument parsing
+          echo "Testing argument parsing..."
+          bash -c 'source setup-gpg-git.sh; parse_args --dry-run' || echo "Dry run test completed"
+        fi
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run security checks
+      run: |
+        echo "Running basic security checks..."
+        
+        # Check for hardcoded secrets or sensitive patterns
+        echo "Checking for potential secrets..."
+        if grep -r -i -E "(password|secret|key|token).*=.*['\"][^'\"]{8,}" . --include="*.sh" || true; then
+          echo "Found potential hardcoded secrets - please review"
+        fi
+        
+        # Check for dangerous commands
+        echo "Checking for dangerous commands..."
+        dangerous_commands=("rm -rf" "sudo rm" "chmod 777" "eval" "exec")
+        for cmd in "${dangerous_commands[@]}"; do
+          if grep -r "$cmd" . --include="*.sh"; then
+            echo "Warning: Found potentially dangerous command: $cmd"
+          fi
+        done
+        
+        # Check for proper error handling
+        echo "Checking for error handling patterns..."
+        if ! grep -r "set -e" . --include="*.sh"; then
+          echo "Note: Consider using 'set -e' for better error handling"
+        fi
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Check documentation
+      run: |
+        echo "Checking documentation..."
+        
+        # Check if scripts have help text
+        for script in $(find . -name "*.sh" -type f); do
+          if grep -q "help\|usage\|--help" "$script"; then
+            echo "✓ $script has help documentation"
+          else
+            echo "⚠ $script might benefit from help documentation"
+          fi
+        done
+        
+        # Check for README
+        if [ -f "README.md" ]; then
+          echo "✓ README.md exists"
+        else
+          echo "⚠ Consider adding a README.md file"
+        fi

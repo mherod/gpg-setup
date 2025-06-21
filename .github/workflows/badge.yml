@@ -1,0 +1,55 @@
+name: Generate Status Badge
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  badge:
+    name: Update Status Badge
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install ShellCheck
+      run: sudo apt-get update && sudo apt-get install -y shellcheck
+      
+    - name: Run ShellCheck and generate badge
+      run: |
+        # Run shellcheck and count issues
+        issues=0
+        total_scripts=0
+        
+        for script in $(find . -name "*.sh" -type f); do
+          total_scripts=$((total_scripts + 1))
+          if ! shellcheck -S style "$script" >/dev/null 2>&1; then
+            issues=$((issues + 1))
+          fi
+        done
+        
+        # Calculate status
+        if [ $issues -eq 0 ]; then
+          status="passing"
+          color="brightgreen"
+        else
+          status="$issues issue(s)"
+          color="red"
+        fi
+        
+        echo "ShellCheck status: $status"
+        echo "Total scripts: $total_scripts"
+        echo "Issues found: $issues"
+        
+        # Generate badge URL
+        badge_url="https://img.shields.io/badge/ShellCheck-$status-$color"
+        echo "Badge URL: $badge_url"
+        
+        # Save badge info for potential use
+        echo "SHELLCHECK_STATUS=$status" >> $GITHUB_ENV
+        echo "SHELLCHECK_COLOR=$color" >> $GITHUB_ENV
+        echo "TOTAL_SCRIPTS=$total_scripts" >> $GITHUB_ENV
+        echo "ISSUES_FOUND=$issues" >> $GITHUB_ENV
