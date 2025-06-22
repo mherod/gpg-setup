@@ -22,6 +22,7 @@ chmod +x setup-gpg-git.sh
 
 ### **Core Functionality**
 - ✅ **Automatic Mode** - Zero-config setup with intelligent existing key detection
+- ✅ **Specified Key Mode** - Use specific GPG key with automatic behaviors
 - ✅ **New Key Mode** - Always generate fresh GPG key (skip existing detection)
 - ✅ **Interactive Mode** - Guided setup with manual key selection
 - ✅ **Existing Key Detection** - Uses your current GPG keys if properly configured
@@ -73,8 +74,14 @@ chmod +x setup-gpg-git.sh
 # Fully automated setup - uses existing keys or finds best match
 ./setup-gpg-git.sh --auto
 
+# Use specific key with automatic behaviors
+./setup-gpg-git.sh --key 6B9C3633387C4FDB
+
 # Preview what auto mode would do
 ./setup-gpg-git.sh --auto --dry-run
+
+# Preview setup with specific key
+./setup-gpg-git.sh --key 6B9C3633387C4FDB --dry-run
 ```
 
 ### **New Key Mode** (Fresh Start)
@@ -163,9 +170,10 @@ chmod +x setup-gpg-git.sh
 
 ### **Advanced Validation**
 - **Configuration Consistency**: Checks GPG setup completeness and accuracy
-- **Fingerprint Formats**: Supports 40-char and 16-char formats
+- **Fingerprint Formats**: Supports 40-char fingerprint, 16-char key ID, and 8-char short key ID formats
 - **Key Accessibility**: Verifies Keybase login status when available
 - **Existing Keys**: Smart detection, validation, and reuse
+- **Specified Key Validation**: Validates specified keys exist and are usable
 - **Git Configuration**: Validates and updates existing settings
 
 ## 🛠️ Configuration Options
@@ -175,11 +183,14 @@ chmod +x setup-gpg-git.sh
 |------|-------------|----------|
 | `--auto` | Fully automated mode | CI/CD, scripted setups |
 | `--new` | Always generate new GPG key | Fresh start, clean setup |
+| `--key KEY_ID` | Use specified key with auto behaviors | Automated setup with specific key |
 | `--dry-run` | Preview mode (no changes) | Testing, validation |
 | `--help` | Show detailed help | Learning, reference |
 
 ### **Flag Combinations**
 - `--auto --new` - Zero-config new key generation
+- `--key KEY_ID` - Use specified key with auto behaviors
+- `--key KEY_ID --dry-run` - Preview setup with specified key
 - `--new --dry-run` - Preview key generation process
 - `--auto --dry-run` - Preview automatic setup
 
@@ -281,6 +292,19 @@ The script automatically handles this with fallback logic:
 2. Tries all available Keybase keys (if available)
 3. Offers to generate new key (interactive mode)
 4. Provides clear error messages and next steps
+
+#### **Invalid Specified Key**
+When using `--key KEY_ID`, the script validates the key:
+```bash
+# Error examples:
+[ERROR] Specified key not found: INVALID123
+[ERROR] Please check that the key exists in your GPG keyring
+
+# Supported formats:
+./setup-gpg-git.sh --key 6B9C3633387C4FDB01234567890ABCDEF12345678  # 40-char fingerprint
+./setup-gpg-git.sh --key 6B9C3633387C4FDB                          # 16-char key ID
+./setup-gpg-git.sh --key 387C4FDB                                  # 8-char short key ID
+```
 
 #### **New Key Generation Issues**
 If `--new` mode seems to reuse existing keys:

@@ -316,6 +316,17 @@ parse_args() {
                 log_info "New key mode enabled - will always generate a fresh GPG key"
                 shift
                 ;;
+            --key)
+                if [[ -n "$2" && "$2" != --* ]]; then
+                    SPECIFIED_KEY="$2"
+                    log_info "Specified key mode enabled - will use key: $SPECIFIED_KEY"
+                    shift 2
+                else
+                    log_error "--key requires a key ID or fingerprint argument"
+                    show_help
+                    exit 1
+                fi
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -327,6 +338,23 @@ parse_args() {
                 ;;
         esac
     done
+    
+    # Validate option combinations
+    local conflicting_options=0
+    [[ "$NEW_KEY_MODE" == "true" ]] && ((conflicting_options++))
+    [[ -n "$SPECIFIED_KEY" ]] && ((conflicting_options++))
+    
+    if [[ $conflicting_options -gt 1 ]]; then
+        log_error "Cannot combine --new and --key options"
+        show_help
+        exit 1
+    fi
+    
+    # If --key is specified, enable auto mode behaviors
+    if [[ -n "$SPECIFIED_KEY" ]]; then
+        AUTO_MODE=true
+        log_info "Auto mode enabled due to --key option"
+    fi
 }
 
 # Show help information
@@ -338,10 +366,11 @@ USAGE:
     $0 [OPTIONS]
 
 OPTIONS:
-    --dry-run    Show what would be done without making changes
-    --auto       Automatic mode - make best decisions without user prompts
-    --new        Always generate a new GPG key (skip existing key detection)
-    --help, -h   Show this help message
+    --dry-run       Show what would be done without making changes
+    --auto          Automatic mode - make best decisions without user prompts
+    --new           Always generate a new GPG key (skip existing key detection)
+    --key KEY_ID    Use specified GPG key (fingerprint or key ID) with auto behaviors
+    --help, -h      Show this help message
 
 DESCRIPTION:
     This script configures GPG signing for git commits. It works with existing
@@ -373,6 +402,14 @@ DESCRIPTION:
     • Set the new key as the default signing key
     • Upload to GitHub and Keybase if available
     • Provide a clean slate GPG setup
+    
+    With --key KEY_ID flag, the script will:
+    • Use the specified GPG key instead of auto-selecting
+    • Enable all auto mode behaviors (no prompts)
+    • Validate the key exists and is usable for signing
+    • Configure git with the specified key
+    • Upload to GitHub and Keybase if available
+    • Accept either full fingerprint (40 chars) or short key ID (16 chars)
 
 REQUIREMENTS:
     - Homebrew (https://brew.sh/)
@@ -1005,6 +1042,75 @@ find_best_existing_key() {
         log_error "No suitable GPG keys found" >&2
         return 1
     fi
+}
+
+# Validate and use specified key
+use_specified_key() {
+    local specified_key="$1"
+    
+    if [[ -z "$specified_key" ]]; then
+        log_error "No key specified" >&2
+        return 1
+    fi
+    
+    log_info "Validating specified key: $specified_key" >&2
+    
+    # Clean up the key input (remove spaces, 0x prefix, etc.)
+    local clean_key
+    clean_key=$(echo "$specified_key" | tr -d ' :' | tr '[:lower:]' '[:upper:]')
+    clean_key=${clean_key#0X}
+    
+    # Determine if it's a fingerprint or key ID
+    local key_id=""
+    
+    if [[ ${#clean_key} -eq 40 && "$clean_key" =~ ^[A-F0-9]+$ ]]; then
+        # Full fingerprint - convert to key ID
+        log_info "Input appears to be a full fingerprint (40 chars)" >&2
+        if key_id=$(fingerprint_to_key_id "$clean_key"); then
+            log_info "Converted fingerprint to key ID: $key_id" >&2
+        else
+            log_error "Could not convert fingerprint to key ID" >&2
+            return 1
+        fi
+    elif [[ ${#clean_key} -eq 16 && "$clean_key" =~ ^[A-F0-9]+$ ]]; then
+        # Short key ID
+        log_info "Input appears to be a key ID (16 chars)" >&2
+        key_id="$clean_key"
+    elif [[ ${#clean_key} -eq 8 && "$clean_key" =~ ^[A-F0-9]+$ ]]; then
+        # Very short key ID - try to find the full one
+        log_info "Input appears to be a short key ID (8 chars), searching for full key..." >&2
+        local full_key_id
+        full_key_id=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: -v short="$clean_key" '/^sec:/ {if ($5 ~ short "$") print $5}' | head -1)
+        if [[ -n "$full_key_id" ]]; then
+            key_id="$full_key_id"
+            log_info "Found full key ID: $key_id" >&2
+        else
+            log_error "Could not find a key matching short ID: $clean_key" >&2
+            return 1
+        fi
+    else
+        log_error "Invalid key format. Expected 40-char fingerprint, 16-char key ID, or 8-char short key ID" >&2
+        log_error "Got: '$clean_key' (${#clean_key} chars)" >&2
+        return 1
+    fi
+    
+    # Verify the key exists in the secret keyring
+    if ! gpg --list-secret-keys "$key_id" >/dev/null 2>&1; then
+        log_error "Key $key_id not found in secret keyring" >&2
+        log_info "Available secret keys:" >&2
+        gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print "  " $5}' >&2
+        return 1
+    fi
+    
+    # Test if the key can be used for signing
+    if ! echo "test" | gpg --armor --detach-sign --default-key "$key_id" >/dev/null 2>&1; then
+        log_warning "Key $key_id exists but may not be usable for signing (passphrase required or key issues)" >&2
+        log_info "Proceeding anyway - signing will be tested during git commits" >&2
+    fi
+    
+    log_success "Specified key validated: $key_id" >&2
+    echo "$key_id"
+    return 0
 }
 
 # Find best matching keys automatically from keybase (returns prioritized list)
@@ -2106,6 +2212,9 @@ main() {
     if [[ "$NEW_KEY_MODE" == "true" ]]; then
         echo "New key mode: This script will generate a fresh GPG key and configure git signing"
         echo "Skipping existing key detection and always creating a new key..."
+    elif [[ -n "$SPECIFIED_KEY" ]]; then
+        echo "Specified key mode: This script will use the provided GPG key with auto behaviors"
+        echo "Using key: $SPECIFIED_KEY"
     elif [[ "$AUTO_MODE" == "true" ]]; then
         echo "Auto mode: This script will automatically configure GPG signing for git commits"
         echo "Checking existing configuration, using existing keys, or importing from keybase as needed..."
@@ -2140,6 +2249,14 @@ main() {
                 exit 1
             fi
             log_success "Generated new GPG key: $key_id"
+        elif [[ -n "$SPECIFIED_KEY" ]]; then
+            # Specified key mode: use the provided key with auto behaviors
+            log_info "Specified key mode: Using provided key with auto behaviors..."
+            if ! key_id=$(use_specified_key "$SPECIFIED_KEY"); then
+                log_error "Failed to validate or use specified key: $SPECIFIED_KEY"
+                exit 1
+            fi
+            log_success "Using specified key: $key_id"
         elif [[ "$AUTO_MODE" == "true" ]]; then
             # Automatic key selection with fallback
             log_info "Auto mode: Finding best existing key or importing from keybase..."
@@ -2166,6 +2283,10 @@ main() {
         if [[ "$NEW_KEY_MODE" == "true" ]]; then
             # Dry run new key mode
             log_info "[DRY RUN] Would generate new GPG key"
+            key_id="DRYRUN1234567890ABCD"
+        elif [[ -n "$SPECIFIED_KEY" ]]; then
+            # Dry run specified key mode
+            log_info "[DRY RUN] Would validate and use specified key: $SPECIFIED_KEY"
             key_id="DRYRUN1234567890ABCD"
         elif [[ "$AUTO_MODE" == "true" ]]; then
             # Dry run auto mode
