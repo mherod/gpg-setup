@@ -10,6 +10,7 @@ set -e
 DRY_RUN=false
 AUTO_MODE=false
 NEW_KEY_MODE=false
+SPECIFIED_KEY=""
 BREW_PREFIX=""
 PINENTRY_PATH=""
 GPG_PATH=""
@@ -149,20 +150,45 @@ get_newest_key_for_email() {
     local email="$1"
     
     if [[ -z "$email" ]]; then
-        log_error "No email provided for key lookup" >&2
         return 1
     fi
     
-    # Get the most recent fingerprint for this email (last in list is newest)
-    local fingerprint
-    fingerprint=$(gpg --list-secret-keys --with-colons --with-fingerprint "$email" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | tail -1)
+    # Get all keys for this email with creation timestamps and sort by newest
+    local newest_key
+    newest_key=$(gpg --list-secret-keys --with-colons --with-fingerprint "$email" 2>/dev/null | \
+        awk -F: '
+        /^sec:/ { 
+            key_id = $5
+            creation_time = $6
+            if (creation_time != "" && creation_time != "0") {
+                keys[creation_time] = key_id
+            }
+        }
+        END {
+            max_time = 0
+            newest_key = ""
+            for (time in keys) {
+                if (time > max_time) {
+                    max_time = time
+                    newest_key = keys[time]
+                }
+            }
+            if (newest_key != "") {
+                print newest_key
+            }
+        }')
     
-    if [[ -n "$fingerprint" ]]; then
-        echo "$fingerprint"
-        return 0
-    else
-        return 1
+    if [[ -n "$newest_key" ]]; then
+        # Convert key ID to full fingerprint
+        local fingerprint
+        fingerprint=$(gpg --list-secret-keys --with-colons --with-fingerprint "$newest_key" 2>/dev/null | awk -F: '/^fpr:/ {print $10}' | head -1)
+        if [[ -n "$fingerprint" ]]; then
+            echo "$fingerprint"
+            return 0
+        fi
     fi
+    
+    return 1
 }
 
 # Convert fingerprint to short key ID
@@ -170,7 +196,6 @@ fingerprint_to_key_id() {
     local fingerprint="$1"
     
     if [[ -z "$fingerprint" ]]; then
-        log_error "No fingerprint provided for key ID conversion" >&2
         return 1
     fi
     
@@ -181,7 +206,6 @@ fingerprint_to_key_id() {
         echo "$key_id"
         return 0
     else
-        log_error "Could not determine key ID for fingerprint: $fingerprint" >&2
         return 1
     fi
 }
@@ -906,47 +930,79 @@ find_best_existing_key() {
     local current_email
     current_email=$(git config --global user.email 2>/dev/null)
     
-    log_info "Looking for best existing GPG key..."
+    log_info "Looking for best existing GPG key..." >&2
     
-    # Get all secret keys
-    local secret_keys
-    secret_keys=$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/ {print $5}')
-    
-    if [[ -z "$secret_keys" ]]; then
-        log_warning "No GPG secret keys found"
+    # Validate GPG is working first
+    if ! gpg --list-secret-keys >/dev/null 2>&1; then
+        log_error "GPG is not functioning properly" >&2
         return 1
     fi
     
-    local matching_keys=() all_keys=()
-    
-    while IFS= read -r key_id; do
-        if [[ -n "$key_id" ]]; then
-            all_keys+=("$key_id")
-            
-            # Check if key matches current email
-            if [[ -n "$current_email" ]]; then
-                local key_info uids
-                key_info=$(gpg --list-keys --with-colons "$key_id" 2>/dev/null)
-                uids=$(echo "$key_info" | awk -F: '/^uid:/ {print $10}' | sed 's/\\x3a/:/g')
-                
-                if echo "$uids" | grep -i "$current_email" >/dev/null 2>&1; then
-                    log_info "Found key matching git email: $key_id"
-                    matching_keys+=("$key_id")
+    # First try to get the newest key for the current email
+    if [[ -n "$current_email" ]]; then
+        local newest_fingerprint
+        if newest_fingerprint=$(get_newest_key_for_email "$current_email"); then
+            # Validate the fingerprint format
+            if [[ ${#newest_fingerprint} -eq 40 && "$newest_fingerprint" =~ ^[A-F0-9]+$ ]]; then
+                local newest_key_id
+                if newest_key_id=$(fingerprint_to_key_id "$newest_fingerprint"); then
+                    # Verify key is actually usable for signing
+                    if gpg --list-secret-keys "$newest_key_id" >/dev/null 2>&1; then
+                        log_info "Found newest key matching git email: $newest_key_id" >&2
+                        echo "$newest_key_id"
+                        return 0
+                    else
+                        log_warning "Key $newest_key_id exists but is not usable for signing" >&2
+                    fi
                 fi
+            else
+                log_warning "Invalid fingerprint format returned: $newest_fingerprint" >&2
             fi
         fi
-    done <<< "$secret_keys"
+    fi
     
-    # Return best match
-    if [[ ${#matching_keys[@]} -gt 0 ]]; then
-        echo "${matching_keys[0]}"
-        return 0
-    elif [[ ${#all_keys[@]} -gt 0 ]]; then
-        log_info "No email match found, using first available key: ${all_keys[0]}"
-        echo "${all_keys[0]}"
-        return 0
+    # Fallback: get all secret keys sorted by creation time
+    local best_key
+    best_key=$(gpg --list-secret-keys --with-colons 2>/dev/null | \
+        awk -F: '
+        /^sec:/ { 
+            key_id = $5
+            creation_time = $6
+            # Only include keys with valid timestamps and key IDs
+            if (creation_time != "" && creation_time != "0" && key_id != "" && length(key_id) >= 8) {
+                keys[creation_time] = key_id
+            }
+        }
+        END {
+            max_time = 0
+            newest_key = ""
+            for (time in keys) {
+                if (time > max_time) {
+                    max_time = time
+                    newest_key = keys[time]
+                }
+            }
+            if (newest_key != "") {
+                print newest_key
+            }
+        }')
+    
+    if [[ -n "$best_key" ]]; then
+        # Verify the fallback key is actually usable
+        if gpg --list-secret-keys "$best_key" >/dev/null 2>&1; then
+            if [[ -n "$current_email" ]]; then
+                log_info "No email match found, using newest available key: $best_key" >&2
+            else
+                log_info "No git email configured, using newest available key: $best_key" >&2
+            fi
+            echo "$best_key"
+            return 0
+        else
+            log_error "Selected key $best_key is not usable" >&2
+            return 1
+        fi
     else
-        log_error "No suitable GPG keys found"
+        log_error "No suitable GPG keys found" >&2
         return 1
     fi
 }
@@ -1726,7 +1782,7 @@ import_keybase_key() {
     local fingerprint="$1"
     
     if [[ -z "$fingerprint" ]]; then
-        log_error "No fingerprint provided"
+        log_error "No fingerprint provided" >&2
         return 1
     fi
     
@@ -1737,34 +1793,34 @@ import_keybase_key() {
     
     # Check if key already exists
     if key_exists "$fingerprint"; then
-        log_info "Key $fingerprint already imported, retrieving key ID..."
+        log_info "Key $fingerprint already imported, retrieving key ID..." >&2
         # Still return the key ID for git config
         local short_key_id
         short_key_id=$(gpg --list-keys --with-colons "$fingerprint" | awk -F: '/^pub:/ {print $5}' | tail -c 17)
         
         if [[ -n "$short_key_id" ]]; then
-            log_success "Using existing key with ID: $short_key_id"
+            log_success "Using existing key with ID: $short_key_id" >&2
             echo "$short_key_id"
             return 0
         else
-            log_error "Could not determine key ID for existing key"
+            log_error "Could not determine key ID for existing key" >&2
             return 1
         fi
     fi
     
-    log_info "Importing key $fingerprint from keybase..."
+    log_info "Importing key $fingerprint from keybase..." >&2
     
     # Import public key
     if [[ "$DRY_RUN" == "true" ]]; then
-        log_info "[DRY RUN] Would import public key from keybase"
-        log_info "[DRY RUN] Would import secret key from keybase"
+        log_info "[DRY RUN] Would import public key from keybase" >&2
+        log_info "[DRY RUN] Would import secret key from keybase" >&2
         echo "DRYRUN1234567890ABCD"
         return 0
     else
         # Check if keybase is accessible
         if ! keybase status >/dev/null 2>&1; then
-            log_error "Keybase is not logged in or accessible"
-            log_info "Please run: keybase login"
+            log_error "Keybase is not logged in or accessible" >&2
+            log_info "Please run: keybase login" >&2
             return 1
         fi
         
@@ -1775,29 +1831,29 @@ import_keybase_key() {
         
         while [[ $retry_count -lt $max_retries && "$import_success" == "false" ]]; do
             if keybase pgp export -q "$fingerprint" 2>/dev/null | gpg --import --quiet 2>/dev/null; then
-                log_success "Public key imported"
+                log_success "Public key imported" >&2
                 import_success=true
             else
                 ((retry_count++))
                 if [[ $retry_count -lt $max_retries ]]; then
-                    log_warning "Public key import failed, retrying... ($retry_count/$max_retries)"
+                    log_warning "Public key import failed, retrying... ($retry_count/$max_retries)" >&2
                     sleep 1
                 fi
             fi
         done
         
         if [[ "$import_success" == "false" ]]; then
-            log_error "Failed to import public key after $max_retries attempts"
+            log_error "Failed to import public key after $max_retries attempts" >&2
             return 1
         fi
         
         # Import secret key with error handling
-        log_info "Importing secret key (may require passphrase)..."
+        log_info "Importing secret key (may require passphrase)..." >&2
         if keybase pgp export --secret -q "$fingerprint" 2>/dev/null | gpg --import --batch --quiet 2>/dev/null; then
-            log_success "Secret key imported"
+            log_success "Secret key imported" >&2
         else
-            log_warning "Secret key import failed or requires interactive input"
-            log_info "You can manually import the secret key later if needed"
+            log_warning "Secret key import failed or requires interactive input" >&2
+            log_info "You can manually import the secret key later if needed" >&2
         fi
     fi
     
@@ -1810,19 +1866,19 @@ import_keybase_key() {
         short_key_id=$(fingerprint_to_key_id "$fingerprint")
         
         if [[ -n "$short_key_id" ]]; then
-            log_info "Short key ID: $short_key_id"
+            log_info "Short key ID: $short_key_id" >&2
             echo "$short_key_id"
             return 0
         else
             ((retry_count++))
             if [[ $retry_count -lt $max_retries ]]; then
-                log_warning "Could not determine short key ID, retrying... ($retry_count/$max_retries)"
+                log_warning "Could not determine short key ID, retrying... ($retry_count/$max_retries)" >&2
                 sleep 1
             fi
         fi
     done
     
-    log_error "Could not determine short key ID after $max_retries attempts"
+    log_error "Could not determine short key ID after $max_retries attempts" >&2
     return 1
 }
 
@@ -2086,12 +2142,19 @@ main() {
             log_success "Generated new GPG key: $key_id"
         elif [[ "$AUTO_MODE" == "true" ]]; then
             # Automatic key selection with fallback
-            log_info "Auto mode: Finding and importing best key automatically..."
-            if ! key_id=$(try_import_best_key); then
-                log_error "Failed to find and import any suitable key automatically"
+            log_info "Auto mode: Finding best existing key or importing from keybase..."
+            
+            # First try existing keys
+            if key_id=$(find_best_existing_key 2>/dev/null); then
+                log_success "Auto-selected existing key: $key_id"
+            # Fallback to keybase import
+            elif command_exists keybase && key_id=$(try_import_best_key 2>/dev/null); then
+                log_success "Auto-imported key from keybase: $key_id"
+            else
+                log_error "Failed to find any suitable key automatically"
+                log_info "Try running in interactive mode or set up keybase"
                 exit 1
             fi
-            log_success "Auto-selected and imported key: $key_id"
         else
             # Interactive mode: try keybase first, then offer to generate new key
             if ! key_id=$(try_import_or_generate_key); then
